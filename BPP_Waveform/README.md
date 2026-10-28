@@ -26,8 +26,10 @@ What it shows:
 - Top right: frame size and format from BeholdTV (`720x576 YUY2`), which also answers §1's open question, plus `line N` and `LPF` when those are on. With RGB24 input it shows a notice and no trace.
 - **All lines / Line N**: the whole frame, or one frame line (1 = top line of the frame BeholdTV passes, not a broadcast line number; values past the frame height use the last line). A single line is drawn at full brightness.
 - **Low pass**: horizontal Gaussian filter on Y before plotting, −3 dB at 1 MHz (BT.601 rate scaled to the frame width; 13 taps at 720). Flat areas keep their exact level; fine detail, noise and chroma residue are smoothed out, so the trace shows average levels, like the LPF view on a hardware or Resolve scope.
-- Line, mode and low pass are saved in the `.ini` (`[GLOBAL] AllLines`, `Line`, `LowPass`).
-- The video is never changed. While the window is closed the plugin returns at once.
+- **Highlight out of range on video**: pixels with Y below 16 or above 235 are replaced in the picture by the chosen colour (Magenta, the default, then Pink, Red, Yellow, Cyan, Blue). Raw Y is tested (no low pass); chroma levels aren't checked. A YUY2 pixel pair shares its colour samples, so the in-range neighbour of a painted pixel picks up the colour's tint. The waveform is measured before painting, so it still shows the real levels. Painting keeps working with the window closed.
+- **Keep the plugin in the Preview chain only.** In the Capture chain, painting would be burned into recordings.
+- All settings are saved in the `.ini` (`[GLOBAL] AllLines`, `Line`, `LowPass`, `Paint`, `PaintColor`).
+- Without painting the video is never changed. While the window is closed and painting is off, the plugin returns at once.
 
 ---
 

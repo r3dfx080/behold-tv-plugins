@@ -5,3 +5,5 @@
 #define IDC_LINE		1003
 #define IDC_LINE_SPIN	1004
 #define IDC_LOWPASS		1005
+#define IDC_PAINT		1006
+#define IDC_PAINT_COLOR	1007
