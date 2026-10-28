@@ -17,7 +17,7 @@ Last updated 2026-10-28.
 1. `sh build.sh`. `./vectorscope_test.exe out.bmp` also renders synthetic 75 % bars onto the scope, to check the graticule without BeholdTV.
 2. Close BeholdTV, copy `BPP_Vectorscope.dll` into `C:\Program Files (x86)\BeholdTV\Plugins\` (admin).
 3. Start BeholdTV, add "Vectorscope" to the **Preview** chain, restart BeholdTV.
-4. Press the plugin's settings button: the window opens beside the video. Drag its edges to resize it (no smaller than the initial size): the scope grows, the options panel stays on the right. **Always on top** is in the title-bar menu (right-click the caption): with it the window stays above other programs too, not only above BeholdTV. Close with Close, Esc or the X; position, size and settings go to `%APPDATA%\BeholdTV\Plugins\BPP_Vectorscope.ini` (`[DIALOG] DlgWndPosX/Y`, `DlgWndWidth/Height`, `Topmost`, `[GLOBAL] AllLines`, `Line`, `Colorize`, `Gain`, `Graticule`).
+4. Press the plugin's settings button: the window opens beside the video. Drag its edges to resize it (no smaller than the initial size): the scope grows, the options panel stays on the right. The minimize button sends it to its own taskbar button. **Always on top** is in the title-bar menu (right-click the caption): with it the window stays above other programs too, not only above BeholdTV. Close with Close, Esc or the X; position, size and settings go to `%APPDATA%\BeholdTV\Plugins\BPP_Vectorscope.ini` (`[DIALOG] DlgWndPosX/Y`, `DlgWndWidth/Height`, `Topmost`, `[GLOBAL] AllLines`, `Line`, `Field`, `Colorize`, `Gain`, `Graticule`).
 
 The look follows decode-orc's vectorscope. What it shows:
 - One point per YUY2 pixel pair: Cb across (right = +B−Y), Cr up (+R−Y), centre = 128/128 (no colour). Brightness follows the square root of the count, so both single points and dense areas show.
@@ -28,7 +28,8 @@ The look follows decode-orc's vectorscope. What it shows:
 - Dotted grey square: the 16..240 colour-difference range (its corners lie outside the ring).
 - **Graticule None / 75% / 100% / Both**: per bar, a filled sector ±10° / ±10 % in the bar's colour, a small box ±3° / ±5 % and a crosshair on the exact BT.601 target (75 % red = Cb 100, Cr 212). 75 % = BT.471 100/0/75/0, the EBU bars on PAL. The trace is OR-ed over the sectors, so it stays visible inside them.
 - **All lines / Line N**: whole frame or one frame line, as in the waveform.
-- Not taken from decode-orc: burst target, trace lines, defocus, field selection. They belong to its composite decoder; BeholdTV hands the plugin decoded YUY2 frames.
+- **Fields: All / Top / Bottom**: with All lines, measure only one field of the interlaced frame. Top = frame lines 1, 3, 5…, bottom = 2, 4, 6…. Named by position, not time order: which field comes first depends on the capture. Assumes BeholdTV passes woven (not deinterlaced) frames, which is what a combed picture on fast motion shows. Greyed out with Line N, since one line is already in one field. A field has half the samples, so the trace is a little dimmer; raise Gain if needed.
+- Not taken from decode-orc: burst target, trace lines, defocus. They belong to its composite decoder; BeholdTV hands the plugin decoded YUY2 frames.
 - The video is never changed. While the window is closed the plugin returns at once.
 - RGB24 input shows a notice and no trace.
 

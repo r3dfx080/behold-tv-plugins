@@ -39,7 +39,6 @@ static volatile BOOL	g_lowpass;
 static volatile BOOL	g_paint;		// paint out-of-range pixels on the video
 static volatile DWORD	g_paintYUV;		// paint colour, Y | Cb << 8 | Cr << 16
 static int				g_paintColor;	// index into g_colors
-static BOOL				g_scaleMv;		// graticule in mV instead of codes (window thread only)
 
 struct PaintColor { const char *name; int r, g, b; };
 static const PaintColor g_colors[] =
@@ -160,24 +159,13 @@ static void SetPaint(BOOL on, int color)
 	g_paint = on;
 }
 
-// Centre of a level's row in a scope 'height' pixels tall; v may be fractional (mV lines)
-static int LevelToY(double v, int height)
+// Centre of a level's row in a scope 'height' pixels tall
+static int LevelToY(int v, int height)
 {
-	return (int) (((LVL_MAX - v) * 2 + 1) * height / (2 * LVL_ROWS));
+	return ((LVL_MAX - v) * 2 + 1) * height / (2 * LVL_ROWS);
 }
 
-// Luma code <-> analog level, BT.601 / ST 125 625-line: black (16) = 0 mV, peak white (235) = 700 mV
-static double MvToCode(double mv)
-{
-	return LIM_BLACK + mv * (LIM_WHITE - LIM_BLACK) / 700.0;
-}
-
-static double CodeToMv(double code)
-{
-	return (code - LIM_BLACK) * 700.0 / (LIM_WHITE - LIM_BLACK);
-}
-
-static void DrawLevel(HDC dc, double v, int w, int h, COLORREF color, int penStyle, const char *label)
+static void DrawLevel(HDC dc, int v, int w, int h, COLORREF color, int penStyle, const char *label)
 {
 	HPEN pen = CreatePen(penStyle, 1, color);
 	HGDIOBJ old = SelectObject(dc, pen);
@@ -192,34 +180,17 @@ static void DrawLevel(HDC dc, double v, int w, int h, COLORREF color, int penSty
 	TextOutA(dc, 2, v > 128 ? y + 1 : y - 14, label, (int) strlen(label));
 }
 
-// Graticule in codes (1, 16, 235, 254) or mV (0..700 every 100, plus the 1/254 edges)
-static void DrawGraticule(HDC dc, int w, int h, BOOL mv)
+// Graticule in codes: 1, 254 (edges) and 16, 235 (limited range)
+static void DrawGraticule(HDC dc, int w, int h)
 {
-	const COLORREF edge = RGB(90, 90, 90), grid = RGB(70, 70, 70), limit = RGB(230, 60, 60);
+	const COLORREF edge = RGB(90, 90, 90), limit = RGB(230, 60, 60);
+	const int levels[] = {LVL_MAX, LVL_MIN, LIM_WHITE, LIM_BLACK};
 	char label[16];
 
-	if (!mv)
+	for (int i = 0; i < 4; i++)
 	{
-		const int levels[] = {LVL_MAX, LVL_MIN, LIM_WHITE, LIM_BLACK};
-		for (int i = 0; i < 4; i++)
-		{
-			sprintf(label, "%d", levels[i]);
-			DrawLevel(dc, levels[i], w, h, i < 2 ? edge : limit, i < 2 ? PS_SOLID : PS_DOT, label);
-		}
-		return;
-	}
-
-	for (int i = 0; i < 2; i++)
-	{
-		int code = i ? LVL_MIN : LVL_MAX;
-		sprintf(label, "%.0f mV", CodeToMv(code));
-		DrawLevel(dc, code, w, h, edge, PS_SOLID, label);
-	}
-	for (int mvLine = 0; mvLine <= 700; mvLine += 100)
-	{
-		BOOL isLimit = mvLine == 0 || mvLine == 700;
-		sprintf(label, "%d mV", mvLine);
-		DrawLevel(dc, MvToCode(mvLine), w, h, isLimit ? limit : grid, PS_DOT, label);
+		sprintf(label, "%d", levels[i]);
+		DrawLevel(dc, levels[i], w, h, i < 2 ? edge : limit, i < 2 ? PS_SOLID : PS_DOT, label);
 	}
 }
 
@@ -263,7 +234,7 @@ static void DrawScope(const DRAWITEMSTRUCT *di)
 
 	SetBkMode(mem, TRANSPARENT);
 	SelectObject(mem, GetStockObject(DEFAULT_GUI_FONT));
-	DrawGraticule(mem, w, h, g_scaleMv);
+	DrawGraticule(mem, w, h);
 
 	char status[96];
 	if (!g_started)
@@ -431,7 +402,7 @@ static void SaveSettings(HWND hDlg)
 	RECT r;
 	if (!GetIniFile(ini))
 		return;
-	if (GetWindowRect(hDlg, &r))
+	if (!IsIconic(hDlg) && GetWindowRect(hDlg, &r))		// closed while minimized: keep the last saved place
 	{
 		WriteIniInt("DIALOG", "DlgWndPosX", r.left, ini);
 		WriteIniInt("DIALOG", "DlgWndPosY", r.top, ini);
@@ -444,27 +415,24 @@ static void SaveSettings(HWND hDlg)
 	WriteIniInt("GLOBAL", "LowPass", g_lowpass, ini);
 	WriteIniInt("GLOBAL", "Paint", g_paint, ini);
 	WriteIniInt("GLOBAL", "PaintColor", g_paintColor, ini);
-	WriteIniInt("GLOBAL", "ScaleMv", g_scaleMv, ini);
 }
 
 static void LoadControls(HWND hDlg)
 {
 	char ini[MAX_PATH];
-	BOOL all = TRUE, lowpass = FALSE, mv = FALSE;
+	BOOL all = TRUE, lowpass = FALSE;
 	int line = 1;
 	if (GetIniFile(ini))
 	{
 		all = GetPrivateProfileIntA("GLOBAL", "AllLines", 1, ini);
 		line = GetPrivateProfileIntA("GLOBAL", "Line", 1, ini);
 		lowpass = GetPrivateProfileIntA("GLOBAL", "LowPass", 0, ini);
-		mv = GetPrivateProfileIntA("GLOBAL", "ScaleMv", 0, ini);
 	}
 	// all controls before the line spin: setting its position fires EN_CHANGE -> ApplyControls
 	CheckDlgButton(hDlg, IDC_PAINT, g_paint ? BST_CHECKED : BST_UNCHECKED);
 	for (int i = 0; i < NUM_COLORS; i++)
 		SendDlgItemMessageA(hDlg, IDC_PAINT_COLOR, CB_ADDSTRING, 0, (LPARAM) g_colors[i].name);
 	SendDlgItemMessageA(hDlg, IDC_PAINT_COLOR, CB_SETCURSEL, g_paintColor, 0);
-	CheckRadioButton(hDlg, IDC_SCALE_CODES, IDC_SCALE_MV, mv ? IDC_SCALE_MV : IDC_SCALE_CODES);
 	CheckRadioButton(hDlg, IDC_ALL_LINES, IDC_ONE_LINE, all ? IDC_ALL_LINES : IDC_ONE_LINE);
 	CheckDlgButton(hDlg, IDC_LOWPASS, lowpass ? BST_CHECKED : BST_UNCHECKED);
 	SendDlgItemMessageA(hDlg, IDC_LINE, EM_LIMITTEXT, 4, 0);
@@ -483,7 +451,6 @@ static void ApplyControls(HWND hDlg)
 	EnableWindow(GetDlgItem(hDlg, IDC_LINE_SPIN), one);
 	g_line = one ? line : 0;
 	g_lowpass = IsDlgButtonChecked(hDlg, IDC_LOWPASS) == BST_CHECKED;
-	g_scaleMv = IsDlgButtonChecked(hDlg, IDC_SCALE_MV) == BST_CHECKED;
 	SetPaint(IsDlgButtonChecked(hDlg, IDC_PAINT) == BST_CHECKED,
 		(int) SendDlgItemMessageA(hDlg, IDC_PAINT_COLOR, CB_GETCURSEL, 0, 0));
 
@@ -526,7 +493,7 @@ static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 		break;
 
 	case WM_SIZE:
-		if (g_numCtl)
+		if (g_numCtl && wParam != SIZE_MINIMIZED)
 			Layout(hDlg, LOWORD(lParam), HIWORD(lParam));
 		return TRUE;
 
@@ -813,13 +780,6 @@ int main()
 
 	assert(LevelToY(LVL_MAX, LVL_ROWS) == 0 && LevelToY(LVL_MIN, LVL_ROWS) == LVL_ROWS - 1);
 	assert(LevelToY(LIM_WHITE, 2 * LVL_ROWS) == 39);		// 2 px per level: row 19, centre pixel 39
-
-	// mV scale: 16 = 0 mV, 235 = 700 mV, 219 codes over 700 mV
-	assert(MvToCode(0) == 16 && MvToCode(700) == 235 && MvToCode(350) == 125.5);
-	assert(CodeToMv(16) == 0 && CodeToMv(235) == 700);
-	assert(fabs(CodeToMv(MvToCode(123.4)) - 123.4) < 1e-9);
-	assert((int) floor(CodeToMv(LVL_MAX) + 0.5) == 761 && (int) floor(CodeToMv(LVL_MIN) + 0.5) == -48);
-	assert(LevelToY(MvToCode(700), 2 * LVL_ROWS) == LevelToY(LIM_WHITE, 2 * LVL_ROWS));
 
 	puts("waveform_test OK");
 	return 0;

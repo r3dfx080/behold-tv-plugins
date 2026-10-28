@@ -17,19 +17,19 @@ Last updated 2026-10-28.
 1. `sh build.sh`
 2. Close BeholdTV, copy `BPP_Waveform.dll` into `C:\Program Files (x86)\BeholdTV\Plugins\` (admin).
 3. Start BeholdTV, add "Waveform monitor" to the **Preview** chain, restart BeholdTV.
-4. Press the plugin's settings button: the waveform window opens and stays open beside the video. Drag its edges to resize it (no smaller than the initial size): the scope grows and the controls stay at the bottom and right. **Always on top** is in the title-bar menu (right-click the caption): with it the window stays above other programs too, not only above BeholdTV. Close it with Close, Esc or the X; its position, size and on-top setting are saved in `%APPDATA%\BeholdTV\Plugins\BPP_Waveform.ini` (`[DIALOG] DlgWndPosX/Y`, same keys as FreqFilter, plus `DlgWndWidth/Height`, `Topmost`).
+4. Press the plugin's settings button: the waveform window opens and stays open beside the video. Drag its edges to resize it (no smaller than the initial size): the scope grows and the controls stay at the bottom and right. The minimize button sends it to its own taskbar button. **Always on top** is in the title-bar menu (right-click the caption): with it the window stays above other programs too, not only above BeholdTV. Close it with Close, Esc or the X; its position, size and on-top setting are saved in `%APPDATA%\BeholdTV\Plugins\BPP_Waveform.ini` (`[DIALOG] DlgWndPosX/Y`, same keys as FreqFilter, plus `DlgWndWidth/Height`, `Topmost`).
 
 What it shows:
 - Luma (Y) only, one column per pixel pair (360 columns for 720 wide), brighter green = more samples at that level.
-- Vertical scale 1–254 (grey lines). Codes 0 and 255 are drawn on the 1 and 254 lines.
+- Vertical scale in 8-bit codes, 1–254 (grey lines). Codes 0 and 255 are drawn on the 1 and 254 lines.
 - Limited range 16 and 235: red dotted lines.
+- No mV / IRE scale: the digital levels don't match the analog input (the decoder's gain and the picture controls sit in between), so an mV scale would only have restated the codes. The ST 125 mapping is in §2.
 - Top right: frame size and format from BeholdTV (`720x576 YUY2`), which also answers §1's open question, plus `line N` and `LPF` when those are on. With RGB24 input it shows a notice and no trace.
-- **Codes / mV**: graticule labels. Codes: lines at 1, 16, 235, 254. mV: dotted lines every 100 mV from 0 to 700 (0 and 700 in red, the same places as 16 and 235), and the 1/254 edges labelled −48 mV and 761 mV. Mapping per BT.601 / ST 125 for 625-line component luma: code 16 = 0 mV, 235 = 700 mV, so 1 code = 700/219 ≈ 3.20 mV. It shows what the digital levels stand for, not a measurement of the analog input (the decoder's gain and the picture controls sit in between). 525-line NTSC with 7.5 IRE setup would map differently; there's no IRE scale.
 - **All lines / Line N**: the whole frame, or one frame line (1 = top line of the frame BeholdTV passes, not a broadcast line number; values past the frame height use the last line). A single line is drawn at full brightness.
 - **Low pass**: horizontal Gaussian filter on Y before plotting, −3 dB at 1 MHz (BT.601 rate scaled to the frame width; 13 taps at 720). Flat areas keep their exact level; fine detail, noise and chroma residue are smoothed out, so the trace shows average levels, like the LPF view on a hardware or Resolve scope.
 - **Highlight out of range on video**: pixels with Y below 16 or above 235 are replaced in the picture by the chosen colour (Magenta, the default, then Pink, Red, Yellow, Cyan, Blue). Raw Y is tested (no low pass); chroma levels aren't checked. A YUY2 pixel pair shares its colour samples, so the in-range neighbour of a painted pixel picks up the colour's tint. The waveform is measured before painting, so it still shows the real levels. Painting keeps working with the window closed.
 - **Keep the plugin in the Preview chain only.** In the Capture chain, painting would be burned into recordings.
-- All settings are saved in the `.ini` (`[GLOBAL] AllLines`, `Line`, `LowPass`, `Paint`, `PaintColor`, `ScaleMv`).
+- All settings are saved in the `.ini` (`[GLOBAL] AllLines`, `Line`, `LowPass`, `Paint`, `PaintColor`). A `ScaleMv` key left by older builds is ignored.
 - Without painting the video is never changed. While the window is closed and painting is off, the plugin returns at once.
 
 ---

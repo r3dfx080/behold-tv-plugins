@@ -12,3 +12,7 @@
 #define IDC_GRAT_75		1011
 #define IDC_GRAT_100	1012
 #define IDC_GRAT_BOTH	1013
+// field radios: consecutive, in FIELD_* order
+#define IDC_FIELD_ALL		1020
+#define IDC_FIELD_TOP		1021
+#define IDC_FIELD_BOTTOM	1022

@@ -21,6 +21,8 @@ enum { LEVELS = 256, ZERO = 128, LIM_LOW = 16, LIM_HIGH = 240, RING = LIM_HIGH -
 enum { GAIN_ALL = 32, GAIN_LINE = 180 };	// trace brightness per sqrt(hits) at gain 10, all lines / one line
 enum { GAIN_DEFAULT = 10, GAIN_MAX = 100 };
 enum { GRAT_NONE, GRAT_75, GRAT_100, GRAT_BOTH };
+// Fields of an interlaced (woven) frame: top = frame lines 1, 3, 5..., bottom = 2, 4, 6...
+enum { FIELD_ALL, FIELD_TOP, FIELD_BOTTOM };
 enum { ARC_PTS = 9 };						// points per arc of a polar box
 #define DEG			(3.14159265358979 / 180)
 #define I_DEG		123.0					// I axis, from +Cb; also the skin-tone line
@@ -42,6 +44,7 @@ static volatile ePixFmt	g_fmt;
 static volatile int		g_frameW, g_frameH;
 
 static volatile int		g_line;			// 0 = all lines, else 1-based frame line (set by the window)
+static volatile int		g_field;		// FIELD_*, used when g_line is 0 (set by the window)
 
 // Display settings (window thread only)
 static BOOL				g_colorize = TRUE;
@@ -66,12 +69,12 @@ enum { NUM_BARS = sizeof(g_bars) / sizeof(g_bars[0]) };
 // Vectorscope
 ////////////////////////////////////////////////////////////////////////////////
 
-// Count Cb/Cr samples for frame lines first..last (0-based). YUY2 is Y0 Cb Y1 Cr:
-// one (Cb, Cr) point per pixel pair.
-static void Accumulate(const BYTE *buf, int w, int pitch, int first, int last, unsigned short (*grid)[LEVELS])
+// Count Cb/Cr samples for frame lines first..last (0-based), every 'step'th line (2 = one field).
+// YUY2 is Y0 Cb Y1 Cr: one (Cb, Cr) point per pixel pair.
+static void Accumulate(const BYTE *buf, int w, int pitch, int first, int last, int step, unsigned short (*grid)[LEVELS])
 {
 	memset(grid, 0, sizeof(unsigned short) * LEVELS * LEVELS);
-	for (int y = first; y <= last; y++)
+	for (int y = first; y <= last; y += step)
 	{
 		const BYTE *p = buf + y * pitch;
 		for (int x = 0; x + 1 < w; x += 2, p += 4)
@@ -325,9 +328,11 @@ static void DrawScope(const DRAWITEMSTRUCT *di)
 	else
 	{
 		int n = sprintf(status, "%dx%d YUY2", g_frameW, g_frameH);
-		int line = g_line;
+		int line = g_line, field = g_field;
 		if (line > 0)
 			sprintf(status + n, "  line %d", line > g_frameH ? g_frameH : line);
+		else if (field != FIELD_ALL)
+			strcpy(status + n, field == FIELD_TOP ? "  top field" : "  bottom field");
 	}
 	SetTextColor(mem, RGB(200, 200, 200));
 	SetTextAlign(mem, TA_LEFT);
@@ -479,7 +484,7 @@ static void SaveSettings(HWND hDlg)
 	RECT r;
 	if (!GetIniFile(ini))
 		return;
-	if (GetWindowRect(hDlg, &r))
+	if (!IsIconic(hDlg) && GetWindowRect(hDlg, &r))		// closed while minimized: keep the last saved place
 	{
 		WriteIniInt("DIALOG", "DlgWndPosX", r.left, ini);
 		WriteIniInt("DIALOG", "DlgWndPosY", r.top, ini);
@@ -489,6 +494,7 @@ static void SaveSettings(HWND hDlg)
 	WriteIniInt("DIALOG", "Topmost", g_topmost, ini);
 	WriteIniInt("GLOBAL", "AllLines", IsDlgButtonChecked(hDlg, IDC_ALL_LINES) == BST_CHECKED, ini);
 	WriteIniInt("GLOBAL", "Line", (long) GetDlgItemInt(hDlg, IDC_LINE, NULL, FALSE), ini);
+	WriteIniInt("GLOBAL", "Field", g_field, ini);
 	WriteIniInt("GLOBAL", "Colorize", g_colorize, ini);
 	WriteIniInt("GLOBAL", "Gain", g_userGain, ini);
 	WriteIniInt("GLOBAL", "Graticule", g_grat, ini);
@@ -503,11 +509,12 @@ static void LoadControls(HWND hDlg)
 {
 	char ini[MAX_PATH];
 	BOOL all = TRUE, colorize = TRUE;
-	int line = 1, gain = GAIN_DEFAULT, grat = GRAT_75;
+	int line = 1, field = FIELD_ALL, gain = GAIN_DEFAULT, grat = GRAT_75;
 	if (GetIniFile(ini))
 	{
 		all = GetPrivateProfileIntA("GLOBAL", "AllLines", 1, ini);
 		line = GetPrivateProfileIntA("GLOBAL", "Line", 1, ini);
+		field = GetPrivateProfileIntA("GLOBAL", "Field", FIELD_ALL, ini);
 		colorize = GetPrivateProfileIntA("GLOBAL", "Colorize", 1, ini);
 		gain = GetPrivateProfileIntA("GLOBAL", "Gain", GAIN_DEFAULT, ini);
 		grat = GetPrivateProfileIntA("GLOBAL", "Graticule", GRAT_75, ini);
@@ -516,6 +523,7 @@ static void LoadControls(HWND hDlg)
 	CheckDlgButton(hDlg, IDC_COLORIZE, colorize ? BST_CHECKED : BST_UNCHECKED);
 	CheckRadioButton(hDlg, IDC_GRAT_NONE, IDC_GRAT_BOTH, IDC_GRAT_NONE + Clamp(grat, GRAT_NONE, GRAT_BOTH));
 	CheckRadioButton(hDlg, IDC_ALL_LINES, IDC_ONE_LINE, all ? IDC_ALL_LINES : IDC_ONE_LINE);
+	CheckRadioButton(hDlg, IDC_FIELD_ALL, IDC_FIELD_BOTTOM, IDC_FIELD_ALL + Clamp(field, FIELD_ALL, FIELD_BOTTOM));
 	SendDlgItemMessageA(hDlg, IDC_GAIN, EM_LIMITTEXT, 3, 0);
 	SendDlgItemMessageA(hDlg, IDC_GAIN_SPIN, UDM_SETRANGE32, 1, GAIN_MAX);
 	SendDlgItemMessageA(hDlg, IDC_GAIN_SPIN, UDM_SETPOS32, 0, Clamp(gain, 1, GAIN_MAX));
@@ -534,6 +542,13 @@ static void ApplyControls(HWND hDlg)
 	EnableWindow(GetDlgItem(hDlg, IDC_LINE), one);
 	EnableWindow(GetDlgItem(hDlg, IDC_LINE_SPIN), one);
 	g_line = one ? line : 0;
+	// a single line already belongs to one field
+	for (int id = IDC_FIELD_ALL; id <= IDC_FIELD_BOTTOM; id++)
+	{
+		EnableWindow(GetDlgItem(hDlg, id), !one);
+		if (IsDlgButtonChecked(hDlg, id) == BST_CHECKED)
+			g_field = id - IDC_FIELD_ALL;
+	}
 
 	g_colorize = IsDlgButtonChecked(hDlg, IDC_COLORIZE) == BST_CHECKED;
 	g_userGain = Clamp((int) GetDlgItemInt(hDlg, IDC_GAIN, NULL, FALSE), 1, GAIN_MAX);
@@ -580,7 +595,7 @@ static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 		break;
 
 	case WM_SIZE:
-		if (g_numCtl)
+		if (g_numCtl && wParam != SIZE_MINIMIZED)
 			Layout(hDlg, LOWORD(lParam), HIWORD(lParam));
 		return TRUE;
 
@@ -659,11 +674,16 @@ BOOL __cdecl VS_Proc(PROC_STR *pPr)
 		return TRUE;
 
 	int h = pPr->FrameHeight;
-	int first = 0, last = h - 1, line = g_line;
+	int first = 0, last = h - 1, step = 1, line = g_line, field = g_field;
 	if (line > 0)
 		first = last = (line > h ? h : line) - 1;
+	else if (field != FIELD_ALL)
+	{
+		first = field == FIELD_TOP ? 0 : 1;
+		step = 2;
+	}
 
-	Accumulate(pPr->SrcBuff[0], pPr->FrameWidth, pPr->SrcPitch, first, last, g_work);
+	Accumulate(pPr->SrcBuff[0], pPr->FrameWidth, pPr->SrcPitch, first, last, step, g_work);
 
 	EnterCriticalSection(&g_lock);
 	memcpy(g_shown, g_work, sizeof(g_shown));
@@ -774,7 +794,7 @@ static void Render(const char *path)
 	enum { W = 720, H = 576, SW = 349, SH = 367 };	// scope control size at 96 dpi
 	static BYTE frame[H * W * 2];
 	FillBars(frame, W, H, W * 2, 0.75);
-	Accumulate(frame, W, W * 2, 0, H - 1, g_shown);
+	Accumulate(frame, W, W * 2, 0, H - 1, 1, g_shown);
 	g_gain = GAIN_ALL;
 	g_started = TRUE;
 	g_fmt = fYUY2;
@@ -830,7 +850,7 @@ int main(int argc, char **argv)
 		}
 
 	static unsigned short grid[LEVELS][LEVELS];
-	Accumulate(&frame[0][0], W, PITCH, 0, H - 1, grid);
+	Accumulate(&frame[0][0], W, PITCH, 0, H - 1, 1, grid);
 	assert(grid[255 - 200][100] == H && grid[255 - 194][106] == H);
 	assert(grid[255 - 235][16] == 0 && grid[255 - 0xEE][0xEE] == 0);	// Y and padding not counted
 	unsigned total = 0;
@@ -840,8 +860,14 @@ int main(int argc, char **argv)
 
 	// single line, odd width: the unpaired last pixel is skipped
 	frame[1][1] = 50;
-	Accumulate(&frame[0][0], W - 1, PITCH, 1, 1, grid);
+	Accumulate(&frame[0][0], W - 1, PITCH, 1, 1, 1, grid);
 	assert(grid[255 - 200][50] == 1 && grid[255 - 200][100] == 0 && grid[255 - 194][106] == 0);
+
+	// fields: top = lines 0 and 2, bottom = line 1 (the one with Cb 50)
+	Accumulate(&frame[0][0], W, PITCH, 0, H - 1, 2, grid);
+	assert(grid[255 - 200][100] == 2 && grid[255 - 200][50] == 0);
+	Accumulate(&frame[0][0], W, PITCH, 1, H - 1, 2, grid);
+	assert(grid[255 - 200][50] == 1 && grid[255 - 200][100] == 0 && grid[255 - 194][106] == 1);
 
 	// bar targets: BT.601 8-bit 75 % bars (Cb/Cr) and 100 % red
 	const int expect75[NUM_BARS][2] = {{44, 142}, {156, 44}, {72, 58}, {184, 198}, {100, 212}, {212, 114}};
