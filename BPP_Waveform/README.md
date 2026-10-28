@@ -23,7 +23,10 @@ What it shows:
 - Luma (Y) only, one column per pixel pair (360 columns for 720 wide), brighter green = more samples at that level.
 - Vertical scale 1–254 (grey lines). Codes 0 and 255 are drawn on the 1 and 254 lines.
 - Limited range 16 and 235: red dotted lines.
-- Top right: frame size and format from BeholdTV (`720x576 YUY2`), which also answers §1's open question. With RGB24 input it shows a notice and no trace.
+- Top right: frame size and format from BeholdTV (`720x576 YUY2`), which also answers §1's open question, plus `line N` and `LPF` when those are on. With RGB24 input it shows a notice and no trace.
+- **All lines / Line N**: the whole frame, or one frame line (1 = top line of the frame BeholdTV passes, not a broadcast line number; values past the frame height use the last line). A single line is drawn at full brightness.
+- **Low pass**: horizontal Gaussian filter on Y before plotting, −3 dB at 1 MHz (BT.601 rate scaled to the frame width; 13 taps at 720). Flat areas keep their exact level; fine detail, noise and chroma residue are smoothed out, so the trace shows average levels, like the LPF view on a hardware or Resolve scope.
+- Line, mode and low pass are saved in the `.ini` (`[GLOBAL] AllLines`, `Line`, `LowPass`).
 - The video is never changed. While the window is closed the plugin returns at once.
 
 ---

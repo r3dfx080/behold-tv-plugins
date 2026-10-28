@@ -5,7 +5,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include <windows.h>
+#include <commctrl.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +19,9 @@
 // Vertical scale: 8-bit codes 1..254 (0 and 255 are timing references, SMPTE ST 125)
 enum { LVL_MIN = 1, LVL_MAX = 254, LVL_ROWS = LVL_MAX - LVL_MIN + 1, MAX_COLS = 1024 };
 enum { LIM_BLACK = 16, LIM_WHITE = 235 };	// limited (studio) range
-enum { TRACE_GAIN = 24 };					// brightness per sample hit
+enum { TRACE_GAIN = 24 };					// brightness per sample hit, all lines
+enum { MAX_W = 4096, MAX_LINE = 2048, LPF_MAX_RADIUS = 16 };
+#define LPF_CUTOFF_HZ	1.0e6				// -3 dB point of the display low pass
 
 static HINSTANCE		g_hInst;
 static HWND volatile	g_hDlg;
@@ -29,27 +33,69 @@ static volatile BOOL	g_started;
 static volatile ePixFmt	g_fmt;
 static volatile int		g_frameW, g_frameH;
 
+// Set by the window, read by the streaming thread
+static volatile int		g_line;			// 0 = all lines, else 1-based frame line
+static volatile BOOL	g_lowpass;
+
 static unsigned short	g_work[LVL_ROWS][MAX_COLS];		// streaming thread only
 static unsigned short	g_shown[LVL_ROWS][MAX_COLS];	// guarded by g_lock
-static int				g_cols;							// guarded by g_lock
+static int				g_cols, g_gain;					// guarded by g_lock
 
 
 ////////////////////////////////////////////////////////////////////////////////
 // Waveform
 ////////////////////////////////////////////////////////////////////////////////
 
-// Count luma samples per (column, level). YUY2 is Y0 Cb Y1 Cr, so Y is every even byte.
-// Row 0 is code 254 (top of the scope).
-static void Accumulate(const BYTE *buf, int w, int h, int pitch, int cols, unsigned short (*wave)[MAX_COLS])
+// Gaussian low pass taps (in 1/4096) for a line 'w' luma samples wide; returns the radius.
+// Like a scope's LPF view: keeps the average level, drops fine detail and chroma residue.
+static int MakeLowPass(int w, int *taps)
 {
-	memset(wave, 0, sizeof(unsigned short) * LVL_ROWS * MAX_COLS);
+	double fs = 13.5e6 * w / 720;				// BT.601 luma rate, scaled to this width
+	double sigma = 0.1325 * fs / LPF_CUTOFF_HZ;	// Gaussian: f(-3 dB) = 0.1325 fs / sigma
+	int r = (int) ceil(3 * sigma);
+	if (r > LPF_MAX_RADIUS) r = LPF_MAX_RADIUS;
 
-	for (int y = 0; y < h; y++)
+	double g[2 * LPF_MAX_RADIUS + 1], sum = 0;
+	for (int i = -r; i <= r; i++)
+		sum += g[i + r] = exp(-0.5 * i * i / (sigma * sigma));
+
+	int total = 0;
+	for (int i = 0; i <= 2 * r; i++)
+		total += taps[i] = (int) floor(4096 * g[i] / sum + 0.5);
+	taps[r] += 4096 - total;		// exact unity gain, so flat areas keep their level
+	return r;
+}
+
+// Count luma samples per (column, level) for frame lines first..last (0-based).
+// YUY2 is Y0 Cb Y1 Cr, so Y is every even byte. Row 0 is code 254 (top of the scope).
+// radius 0 = no low pass.
+static void Accumulate(const BYTE *buf, int w, int pitch, int first, int last, int cols,
+	const int *taps, int radius, unsigned short (*wave)[MAX_COLS])
+{
+	static int luma[MAX_W];
+	memset(wave, 0, sizeof(unsigned short) * LVL_ROWS * MAX_COLS);
+	if (w > MAX_W) w = MAX_W;	// shortcut: wider frames lose their right part, raise MAX_W if one appears
+
+	for (int y = first; y <= last; y++)
 	{
 		const BYTE *line = buf + y * pitch;
 		for (int x = 0; x < w; x++)
+			luma[x] = line[x * 2];
+
+		for (int x = 0; x < w; x++)
 		{
-			int v = line[x * 2];
+			int v = luma[x];
+			if (radius)
+			{
+				int acc = 0;
+				for (int i = -radius; i <= radius; i++)
+				{
+					int xi = x + i;
+					xi = xi < 0 ? 0 : xi >= w ? w - 1 : xi;		// repeat the edge samples
+					acc += taps[i + radius] * luma[xi];
+				}
+				v = (acc + 2048) >> 12;
+			}
 			// pin the reserved codes to the edges so they stay visible
 			if (v < LVL_MIN) v = LVL_MIN;
 			else if (v > LVL_MAX) v = LVL_MAX;
@@ -96,7 +142,7 @@ static void DrawScope(const DRAWITEMSTRUCT *di)
 	for (int i = 0; i < LVL_ROWS; i++)
 		for (int x = 0; x < cols; x++)
 		{
-			unsigned c = g_shown[i][x] * TRACE_GAIN;
+			unsigned c = g_shown[i][x] * g_gain;
 			if (c > 255) c = 255;
 			pix[i * cols + x] = ((c / 4) << 16) | (c << 8) | (c / 4);	// green trace, 0x00RRGGBB
 		}
@@ -129,13 +175,20 @@ static void DrawScope(const DRAWITEMSTRUCT *di)
 	DrawLevel(mem, LIM_WHITE, w, h, RGB(230, 60, 60), PS_DOT);
 	DrawLevel(mem, LIM_BLACK, w, h, RGB(230, 60, 60), PS_DOT);
 
-	char status[64];
+	char status[96];
 	if (!g_started)
 		strcpy(status, "No video");
 	else if (g_fmt != fYUY2)
 		sprintf(status, "%dx%d RGB24: needs YUY2 input", g_frameW, g_frameH);
 	else
-		sprintf(status, "%dx%d YUY2", g_frameW, g_frameH);
+	{
+		int n = sprintf(status, "%dx%d YUY2", g_frameW, g_frameH);
+		int line = g_line;
+		if (line > 0)
+			n += sprintf(status + n, "  line %d", line > g_frameH ? g_frameH : line);
+		if (g_lowpass)
+			strcpy(status + n, "  LPF");
+	}
 	SetTextColor(mem, RGB(200, 200, 200));
 	SetTextAlign(mem, TA_RIGHT);
 	TextOutA(mem, w - 4, 4, status, (int) strlen(status));
@@ -183,16 +236,62 @@ static void RestorePos(HWND hDlg, HWND hParent)
 			0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
-static void SavePos(HWND hDlg)
+static void WriteIniInt(const char *section, const char *key, long value, const char *ini)
 {
-	char ini[MAX_PATH], num[16];
+	char num[16];
+	sprintf(num, "%ld", value);
+	WritePrivateProfileStringA(section, key, num, ini);
+}
+
+static void SaveSettings(HWND hDlg)
+{
+	char ini[MAX_PATH];
 	RECT r;
-	if (!GetIniFile(ini) || !GetWindowRect(hDlg, &r))
+	if (!GetIniFile(ini))
 		return;
-	sprintf(num, "%ld", r.left);
-	WritePrivateProfileStringA("DIALOG", "DlgWndPosX", num, ini);
-	sprintf(num, "%ld", r.top);
-	WritePrivateProfileStringA("DIALOG", "DlgWndPosY", num, ini);
+	if (GetWindowRect(hDlg, &r))
+	{
+		WriteIniInt("DIALOG", "DlgWndPosX", r.left, ini);
+		WriteIniInt("DIALOG", "DlgWndPosY", r.top, ini);
+	}
+	WriteIniInt("GLOBAL", "AllLines", IsDlgButtonChecked(hDlg, IDC_ALL_LINES) == BST_CHECKED, ini);
+	WriteIniInt("GLOBAL", "Line", (long) GetDlgItemInt(hDlg, IDC_LINE, NULL, FALSE), ini);
+	WriteIniInt("GLOBAL", "LowPass", g_lowpass, ini);
+}
+
+static void LoadControls(HWND hDlg)
+{
+	char ini[MAX_PATH];
+	BOOL all = TRUE, lowpass = FALSE;
+	int line = 1;
+	if (GetIniFile(ini))
+	{
+		all = GetPrivateProfileIntA("GLOBAL", "AllLines", 1, ini);
+		line = GetPrivateProfileIntA("GLOBAL", "Line", 1, ini);
+		lowpass = GetPrivateProfileIntA("GLOBAL", "LowPass", 0, ini);
+	}
+	CheckRadioButton(hDlg, IDC_ALL_LINES, IDC_ONE_LINE, all ? IDC_ALL_LINES : IDC_ONE_LINE);
+	CheckDlgButton(hDlg, IDC_LOWPASS, lowpass ? BST_CHECKED : BST_UNCHECKED);
+	SendDlgItemMessageA(hDlg, IDC_LINE, EM_LIMITTEXT, 4, 0);
+	SendDlgItemMessageA(hDlg, IDC_LINE_SPIN, UDM_SETRANGE32, 1, MAX_LINE);
+	SendDlgItemMessageA(hDlg, IDC_LINE_SPIN, UDM_SETPOS32, 0, line < 1 ? 1 : line > MAX_LINE ? MAX_LINE : line);
+}
+
+// Controls -> settings the streaming thread reads
+static void ApplyControls(HWND hDlg)
+{
+	BOOL one = IsDlgButtonChecked(hDlg, IDC_ONE_LINE) == BST_CHECKED;
+	int line = (int) GetDlgItemInt(hDlg, IDC_LINE, NULL, FALSE);
+	if (line < 1) line = 1;		// empty while typing
+
+	EnableWindow(GetDlgItem(hDlg, IDC_LINE), one);
+	EnableWindow(GetDlgItem(hDlg, IDC_LINE_SPIN), one);
+	g_line = one ? line : 0;
+	g_lowpass = IsDlgButtonChecked(hDlg, IDC_LOWPASS) == BST_CHECKED;
+
+	HWND scope = g_hScope;
+	if (scope)
+		InvalidateRect(scope, NULL, FALSE);
 }
 
 static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -200,6 +299,8 @@ static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 	switch (msg)
 	{
 	case WM_INITDIALOG:
+		LoadControls(hDlg);
+		ApplyControls(hDlg);
 		g_hScope = GetDlgItem(hDlg, IDC_SCOPE);
 		RestorePos(hDlg, (HWND) lParam);
 		return TRUE;
@@ -218,11 +319,17 @@ static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 			DestroyWindow(hDlg);
 			return TRUE;
 		}
+		if ((LOWORD(wParam) == IDC_LINE && HIWORD(wParam) == EN_CHANGE) ||
+			(LOWORD(wParam) != IDC_LINE && HIWORD(wParam) == BN_CLICKED))
+		{
+			ApplyControls(hDlg);
+			return TRUE;
+		}
 		break;
 
 	case WM_DESTROY:
 		g_hScope = NULL;
-		SavePos(hDlg);
+		SaveSettings(hDlg);
 		g_hDlg = NULL;
 		break;
 	}
@@ -253,17 +360,31 @@ BOOL __cdecl WF_Proc(PROC_STR *pPr)
 {
 	HWND scope = g_hScope;
 	// nothing to do while the window is closed
-	if (!scope || !pPr || !pPr->SrcBuff[0] || g_fmt != fYUY2 || pPr->FrameWidth <= 0)
+	if (!scope || !pPr || !pPr->SrcBuff[0] || g_fmt != fYUY2 || pPr->FrameWidth <= 0 || pPr->FrameHeight <= 0)
 		return TRUE;
 
-	int cols = pPr->FrameWidth / 2;		// one column per YUY2 pixel pair
+	int w = pPr->FrameWidth, h = pPr->FrameHeight;
+	int cols = w / 2;					// one column per YUY2 pixel pair
 	if (cols > MAX_COLS) cols = MAX_COLS;
 
-	Accumulate(pPr->SrcBuff[0], pPr->FrameWidth, pPr->FrameHeight, pPr->SrcPitch, cols, g_work);
+	int first = 0, last = h - 1, line = g_line;
+	if (line > 0)
+		first = last = (line > h ? h : line) - 1;
+
+	static int taps[2 * LPF_MAX_RADIUS + 1], radius, tapsW;
+	if (w != tapsW)
+	{
+		radius = MakeLowPass(w, taps);
+		tapsW = w;
+	}
+	BOOL lowpass = g_lowpass;
+
+	Accumulate(pPr->SrcBuff[0], w, pPr->SrcPitch, first, last, cols, taps, lowpass ? radius : 0, g_work);
 
 	EnterCriticalSection(&g_lock);
 	memcpy(g_shown, g_work, sizeof(g_shown));
 	g_cols = cols;
+	g_gain = first == last ? 255 : TRACE_GAIN;		// a single line has at most 2 hits per cell
 	LeaveCriticalSection(&g_lock);
 
 	InvalidateRect(scope, NULL, FALSE);
@@ -285,6 +406,8 @@ void __cdecl WF_ShowDialog(DLG_STR *pDlgPar)
 		SetForegroundWindow(g_hDlg);
 		return;
 	}
+	INITCOMMONCONTROLSEX icc = {sizeof(icc), ICC_UPDOWN_CLASS};
+	InitCommonControlsEx(&icc);
 	g_hDlg = CreateDialogParamA(g_hInst, MAKEINTRESOURCEA(IDD_WAVEFORM), pDlgPar->hwndParent, DialogProc, (LPARAM) pDlgPar->hwndParent);
 	if (g_hDlg)
 		ShowWindow(g_hDlg, SW_SHOW);
@@ -299,7 +422,7 @@ void __cdecl WF_Uninit(void)
 static PROC_PLUGIN Waveform_PL =
 {
 	(char *) "Waveform monitor",
-	(char *) "Luma waveform, levels 1-254, limited range 16/235 marked (YUY2)",
+	(char *) "Luma waveform, levels 1-254, limited range 16/235 marked, line select, low pass (YUY2)",
 	NULL,
 	WF_Start,
 	WF_Proc,
@@ -355,7 +478,7 @@ int main()
 		}
 
 	static unsigned short wave[LVL_ROWS][MAX_COLS];
-	Accumulate(&frame[0][0], W, H, PITCH, W / 2, wave);
+	Accumulate(&frame[0][0], W, PITCH, 0, H - 1, W / 2, NULL, 0, wave);
 
 	assert(wave[LVL_MAX - 1][0] == H);		// code 0 pinned to 1, column 0
 	assert(wave[LVL_MAX - 254][0] == H);	// code 255 pinned to 254, column 0
@@ -368,6 +491,50 @@ int main()
 		for (int x = 0; x < MAX_COLS; x++)
 			total += wave[i][x];
 	assert(total == W * H);
+
+	// single line: only that line is counted
+	frame[1][2 * 2] = 200;
+	Accumulate(&frame[0][0], W, PITCH, 1, 1, W / 2, NULL, 0, wave);
+	assert(wave[LVL_MAX - 200][1] == 1 && wave[LVL_MAX - 16][1] == 0 && wave[LVL_MAX - 17][1] == 1);
+	total = 0;
+	for (int i = 0; i < LVL_ROWS; i++)
+		for (int x = 0; x < MAX_COLS; x++)
+			total += wave[i][x];
+	assert(total == W);
+
+	// low pass taps: unity gain, symmetric, sensible width at 720
+	int taps[2 * LPF_MAX_RADIUS + 1];
+	int r = MakeLowPass(720, taps), sum = 0;
+	for (int i = 0; i <= 2 * r; i++)
+	{
+		sum += taps[i];
+		assert(taps[i] == taps[2 * r - i] || i == r);
+	}
+	assert(sum == 4096 && r >= 4 && r <= 8);
+
+	// low pass on a 720-wide line: flat stays flat, a black-to-white step gets in-between levels
+	enum { LW = 720 };
+	static BYTE wide[2][LW * 2];
+	for (int x = 0; x < LW; x++)
+	{
+		wide[0][x * 2] = 100;
+		wide[1][x * 2] = x < LW / 2 ? 16 : 235;
+		wide[0][x * 2 + 1] = wide[1][x * 2 + 1] = 128;
+	}
+	Accumulate(&wide[0][0], LW, LW * 2, 0, 0, LW / 2, taps, r, wave);
+	assert(wave[LVL_MAX - 100][0] == 2 && wave[LVL_MAX - 100][LW / 2 - 1] == 2);
+	Accumulate(&wide[0][0], LW, LW * 2, 1, 1, LW / 2, NULL, 0, wave);
+	int between = 0;
+	for (int v = 17; v < 235; v++)
+		for (int x = 0; x < LW / 2; x++)
+			between += wave[LVL_MAX - v][x];
+	assert(between == 0);		// without low pass the step is clean
+	Accumulate(&wide[0][0], LW, LW * 2, 1, 1, LW / 2, taps, r, wave);
+	for (int v = 17; v < 235; v++)
+		for (int x = 0; x < LW / 2; x++)
+			between += wave[LVL_MAX - v][x];
+	assert(between >= 4 && between <= 2 * r);		// only samples within the filter radius of the edge move
+	assert(wave[LVL_MAX - 16][0] == 2 && wave[LVL_MAX - 235][LW / 2 - 1] == 2);
 
 	assert(LevelToY(LVL_MAX, LVL_ROWS) == 0 && LevelToY(LVL_MIN, LVL_ROWS) == LVL_ROWS - 1);
 	assert(LevelToY(LIM_WHITE, 2 * LVL_ROWS) == 39);		// 2 px per level: row 19, centre pixel 39

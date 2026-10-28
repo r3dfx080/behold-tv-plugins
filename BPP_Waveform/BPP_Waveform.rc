@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <commctrl.h>
 #include "resource.h"
 
 // Standalone tool window, same style as BPP_FreqFilter's main dialog
@@ -9,5 +10,10 @@ CAPTION "BPP_Waveform"
 FONT 8, "MS Sans Serif"
 BEGIN
     CONTROL         "", IDC_SCOPE, "Static", SS_OWNERDRAW, 4, 4, 248, 170
+    AUTORADIOBUTTON "All lines", IDC_ALL_LINES, 4, 180, 40, 10, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Line", IDC_ONE_LINE, 46, 180, 28, 10
+    EDITTEXT        IDC_LINE, 76, 178, 36, 12, ES_NUMBER | WS_GROUP
+    CONTROL         "", IDC_LINE_SPIN, UPDOWN_CLASS, UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_NOTHOUSANDS, 0, 0, 0, 0
+    AUTOCHECKBOX    "Low pass", IDC_LOWPASS, 124, 180, 44, 10, WS_GROUP | WS_TABSTOP
     PUSHBUTTON      "Close", IDCANCEL, 205, 178, 47, 13
 END
