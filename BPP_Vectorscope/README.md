@@ -17,14 +17,18 @@ Last updated 2026-10-28.
 1. `sh build.sh`. `./vectorscope_test.exe out.bmp` also renders synthetic 75 % bars onto the scope, to check the graticule without BeholdTV.
 2. Close BeholdTV, copy `BPP_Vectorscope.dll` into `C:\Program Files (x86)\BeholdTV\Plugins\` (admin).
 3. Start BeholdTV, add "Vectorscope" to the **Preview** chain, restart BeholdTV.
-4. Press the plugin's settings button: the window opens beside the video. Close with Close, Esc or the X; position and line setting go to `%APPDATA%\BeholdTV\Plugins\BPP_Vectorscope.ini` (`[DIALOG] DlgWndPosX/Y`, `[GLOBAL] AllLines`, `Line`).
+4. Press the plugin's settings button: the window opens beside the video. Close with Close, Esc or the X; position and settings go to `%APPDATA%\BeholdTV\Plugins\BPP_Vectorscope.ini` (`[DIALOG] DlgWndPosX/Y`, `[GLOBAL] AllLines`, `Line`, `Colorize`, `Gain`, `Graticule`).
 
-What it shows:
-- One point per YUY2 pixel pair: Cb across (right = +B−Y), Cr up (+R−Y), centre = 128/128 (no colour). Brighter green = more samples; brightness follows the square root of the count so both single points and dense areas show.
-- Dotted grey square: the 16..240 colour-difference range.
-- Target boxes, ±3° and ±5 % around each bar's vector: solid for 75 % bars (BT.471 100/0/75/0, the EBU bars on PAL), dotted and labelled for 100 % bars. Targets are exact BT.601 values (75 % red = Cb 100, Cr 212).
-- Orange dotted line at 123°: the skin-tone line.
+The look follows decode-orc's vectorscope. What it shows:
+- One point per YUY2 pixel pair: Cb across (right = +B−Y), Cr up (+R−Y), centre = 128/128 (no colour). Brightness follows the square root of the count, so both single points and dense areas show.
+- **Colorize**: each point in its own hue (white near the centre); off = green trace.
+- **Gain** 1–100 (default 10): trace brightness.
+- Ring at Cb/Cr ±112 (16/240, ±350 mV), ticks every 2° (long every 10°), Cb/Cr axes.
+- I / Q / −I / −Q lines at 123° / 33° / 303° / 213°. The I line is the skin-tone line.
+- Dotted grey square: the 16..240 colour-difference range (its corners lie outside the ring).
+- **Graticule None / 75% / 100% / Both**: per bar, a filled sector ±10° / ±10 % in the bar's colour, a small box ±3° / ±5 % and a crosshair on the exact BT.601 target (75 % red = Cb 100, Cr 212). 75 % = BT.471 100/0/75/0, the EBU bars on PAL. The trace is OR-ed over the sectors, so it stays visible inside them.
 - **All lines / Line N**: whole frame or one frame line, as in the waveform.
+- Not taken from decode-orc: burst target, trace lines, defocus, field selection. They belong to its composite decoder; BeholdTV hands the plugin decoded YUY2 frames.
 - The video is never changed. While the window is closed the plugin returns at once.
 - RGB24 input shows a notice and no trace.
 

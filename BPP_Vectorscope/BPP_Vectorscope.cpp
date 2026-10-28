@@ -17,12 +17,19 @@
 #define BH_PLUGIN_EXP	__declspec(dllexport)
 
 // Plot plane: 8-bit Cb across, Cr up. 128 = zero, 16..240 = colour-difference range (SMPTE ST 125)
-enum { LEVELS = 256, ZERO = 128, LIM_LOW = 16, LIM_HIGH = 240, MAX_LINE = 2048 };
-enum { GAIN_ALL = 32, GAIN_LINE = 180 };	// trace brightness per sqrt(hits), all lines / one line
+enum { LEVELS = 256, ZERO = 128, LIM_LOW = 16, LIM_HIGH = 240, RING = LIM_HIGH - ZERO, MAX_LINE = 2048 };
+enum { GAIN_ALL = 32, GAIN_LINE = 180 };	// trace brightness per sqrt(hits) at gain 10, all lines / one line
+enum { GAIN_DEFAULT = 10, GAIN_MAX = 100 };
+enum { GRAT_NONE, GRAT_75, GRAT_100, GRAT_BOTH };
+enum { ARC_PTS = 9 };						// points per arc of a polar box
 #define DEG			(3.14159265358979 / 180)
-#define SKIN_DEG	123.0					// skin-tone line, from the +Cb axis
-#define BOX_DEG		3.0						// target box: +-3 degrees,
-#define BOX_AMP		0.05					// +-5 % amplitude (scope makers' convention, not a standard)
+#define I_DEG		123.0					// I axis, from +Cb; also the skin-tone line
+#define Q_DEG		33.0
+// Target tolerances, scope makers' convention (not a standard): small box +-3 deg / +-5 %, sector +-10 deg / +-10 %
+#define BOX_DEG		3.0
+#define BOX_AMP		0.05
+#define SECTOR_DEG	10.0
+#define SECTOR_AMP	0.10
 
 static HINSTANCE		g_hInst;
 static HWND volatile	g_hDlg;
@@ -36,15 +43,21 @@ static volatile int		g_frameW, g_frameH;
 
 static volatile int		g_line;			// 0 = all lines, else 1-based frame line (set by the window)
 
+// Display settings (window thread only)
+static BOOL				g_colorize = TRUE;
+static int				g_userGain = GAIN_DEFAULT;
+static int				g_grat = GRAT_75;
+
 static unsigned short	g_work[LEVELS][LEVELS];		// [255 - Cr][Cb], streaming thread only
 static unsigned short	g_shown[LEVELS][LEVELS];	// guarded by g_lock
 static int				g_gain;						// guarded by g_lock
 
-// Colour bars in the order they appear, BT.471 names
-struct Bar { const char *name; int r, g, b; };
+// Colour bars in the order they appear, BT.471 names, with the graticule colour for each
+struct Bar { const char *name; int r, g, b; COLORREF color; };
 static const Bar g_bars[] =
 {
-	{"Yl", 1, 1, 0}, {"Cy", 0, 1, 1}, {"G", 0, 1, 0}, {"Mg", 1, 0, 1}, {"R", 1, 0, 0}, {"B", 0, 0, 1},
+	{"Yl", 1, 1, 0, RGB(220, 190, 60)}, {"Cy", 0, 1, 1, RGB(70, 200, 200)}, {"G", 0, 1, 0, RGB(70, 200, 90)},
+	{"Mg", 1, 0, 1, RGB(210, 80, 210)}, {"R", 1, 0, 0, RGB(235, 80, 80)}, {"B", 0, 0, 1, RGB(80, 130, 235)},
 };
 enum { NUM_BARS = sizeof(g_bars) / sizeof(g_bars[0]) };
 
@@ -78,6 +91,32 @@ static void BarTarget(const Bar &bar, double level, double *cb, double *cr)
 	*cr = ZERO + 224 * (0.5 * r - 0.418688 * g - 0.081312 * b);
 }
 
+// Trace colour of each (Cb, Cr) cell, same layout as g_shown: the hue at its brightest
+// (BT.601 RGB of Y = 0.5 with that chroma, scaled so the largest component is 255).
+// The centre comes out white.
+static DWORD g_hue[LEVELS * LEVELS];
+
+static void MakeHues()
+{
+	for (int cr = 0; cr < LEVELS; cr++)
+		for (int cb = 0; cb < LEVELS; cb++)
+		{
+			double pb = (cb - ZERO) / 224.0, pr = (cr - ZERO) / 224.0;
+			double c[3] = {0.5 + 1.402 * pr, 0.5 - 0.344136 * pb - 0.714136 * pr, 0.5 + 1.772 * pb};
+			double m = 0;
+			for (int i = 0; i < 3; i++)
+			{
+				if (c[i] < 0) c[i] = 0;
+				if (c[i] > m) m = c[i];
+			}
+			if (m == 0) m = 1;
+			DWORD v = 0;
+			for (int i = 0; i < 3; i++)
+				v = v << 8 | (DWORD) (255 * c[i] / m + 0.5);
+			g_hue[(LEVELS - 1 - cr) * LEVELS + cb] = v;		// 0x00RRGGBB
+		}
+}
+
 // Square plot area inside the scope control
 struct Plane { int x0, y0, side; };
 
@@ -93,69 +132,144 @@ static POINT Polar(const Plane &pl, double r, double a)
 	return ToScreen(pl, ZERO + r * cos(a), ZERO + r * sin(a));
 }
 
-static void DrawTargetBox(HDC dc, const Plane &pl, double cb, double cr)
+// Outline of the region within +-amp (fraction) and +-deg around a target, curved like the graticule
+static void PolarBox(const Plane &pl, double cb, double cr, double amp, double deg, POINT *pt)
 {
 	double r = hypot(cb - ZERO, cr - ZERO), a = atan2(cr - ZERO, cb - ZERO);
-	double rs[4] = {r * (1 - BOX_AMP), r * (1 + BOX_AMP), r * (1 + BOX_AMP), r * (1 - BOX_AMP)};
-	double as[4] = {a - BOX_DEG * DEG, a - BOX_DEG * DEG, a + BOX_DEG * DEG, a + BOX_DEG * DEG};
-	POINT pt[5];
-	for (int i = 0; i < 5; i++)
-		pt[i] = Polar(pl, rs[i % 4], as[i % 4]);
-	Polyline(dc, pt, 5);
+	for (int i = 0; i < ARC_PTS; i++)
+	{
+		double t = a + (2.0 * i / (ARC_PTS - 1) - 1) * deg * DEG;
+		pt[i] = Polar(pl, r * (1 + amp), t);
+		pt[2 * ARC_PTS - 1 - i] = Polar(pl, r * (1 - amp), t);
+	}
 }
 
-// Axes, 16..240 range square, skin-tone line, 75 % (solid) and 100 % (dotted) bar targets
-static void DrawGraticule(HDC dc, const Plane &pl)
+static BOOL ShowLevel(int grat, double level)
 {
-	HPEN axis = CreatePen(PS_SOLID, 1, RGB(70, 70, 70));
-	HPEN range = CreatePen(PS_DOT, 1, RGB(90, 90, 90));
-	HPEN skin = CreatePen(PS_DOT, 1, RGB(200, 140, 90));
-	HPEN bar75 = CreatePen(PS_SOLID, 1, RGB(200, 200, 200));
-	HPEN bar100 = CreatePen(PS_DOT, 1, RGB(130, 130, 130));
-	HGDIOBJ old = SelectObject(dc, axis);
+	return grat == GRAT_BOTH || grat == (level == 0.75 ? GRAT_75 : GRAT_100);
+}
 
-	POINT a[2] = {ToScreen(pl, 0, ZERO), ToScreen(pl, LEVELS - 1, ZERO)};
-	POINT b[2] = {ToScreen(pl, ZERO, 0), ToScreen(pl, ZERO, LEVELS - 1)};
-	Polyline(dc, a, 2);
-	Polyline(dc, b, 2);
+static COLORREF Dim(COLORREF c, int pct)
+{
+	return RGB(GetRValue(c) * pct / 100, GetGValue(c) * pct / 100, GetBValue(c) * pct / 100);
+}
+
+// Filled target sectors, drawn under the trace
+static void DrawSectors(HDC dc, const Plane &pl, int grat)
+{
+	for (int i = 0; i < NUM_BARS; i++)
+		for (double level = 0.75; level <= 1.0; level += 0.25)
+		{
+			if (!ShowLevel(grat, level))
+				continue;
+			double cb, cr;
+			POINT pt[2 * ARC_PTS];
+			BarTarget(g_bars[i], level, &cb, &cr);
+			PolarBox(pl, cb, cr, SECTOR_AMP, SECTOR_DEG, pt);
+
+			HBRUSH fill = CreateSolidBrush(Dim(g_bars[i].color, 22));
+			HPEN edge = CreatePen(PS_SOLID, 1, Dim(g_bars[i].color, 50));
+			HGDIOBJ oldBrush = SelectObject(dc, fill), oldPen = SelectObject(dc, edge);
+			Polygon(dc, pt, 2 * ARC_PTS);
+			SelectObject(dc, oldBrush);
+			SelectObject(dc, oldPen);
+			DeleteObject(fill);
+			DeleteObject(edge);
+		}
+}
+
+static void Line(HDC dc, POINT a, POINT b)
+{
+	MoveToEx(dc, a.x, a.y, NULL);
+	LineTo(dc, b.x, b.y);
+}
+
+// Ring with degree ticks, Cb/Cr axes, I/Q lines, 16..240 range square, target boxes and labels
+static void DrawGraticule(HDC dc, const Plane &pl, int grat)
+{
+	HPEN white = CreatePen(PS_SOLID, 1, RGB(230, 230, 230));
+	HPEN ring = CreatePen(PS_SOLID, 2, RGB(230, 230, 230));
+	HPEN range = CreatePen(PS_DOT, 1, RGB(90, 90, 90));
+	HGDIOBJ oldPen = SelectObject(dc, ring), oldBrush = SelectObject(dc, GetStockObject(NULL_BRUSH));
+
+	POINT tl = ToScreen(pl, ZERO - RING, ZERO + RING), br = ToScreen(pl, ZERO + RING, ZERO - RING);
+	Ellipse(dc, tl.x, tl.y, br.x + 1, br.y + 1);
+
+	SelectObject(dc, white);
+	for (int d = 0; d < 360; d += 2)
+		Line(dc, Polar(pl, RING, d * DEG), Polar(pl, RING - (d % 10 ? 2 : 5), d * DEG));
+	Line(dc, Polar(pl, RING, 0), Polar(pl, RING, 180 * DEG));
+	Line(dc, Polar(pl, RING, 90 * DEG), Polar(pl, RING, 270 * DEG));
+
+	const struct { double deg; const char *name; } iq[] = {{I_DEG, "I"}, {Q_DEG, "Q"}, {I_DEG + 180, "-I"}, {Q_DEG + 180, "-Q"}};
+	SetTextColor(dc, RGB(170, 170, 170));
+	SetTextAlign(dc, TA_CENTER);
+	for (int i = 0; i < 4; i++)
+	{
+		Line(dc, Polar(pl, RING * 0.2, iq[i].deg * DEG), Polar(pl, RING - 6, iq[i].deg * DEG));
+		POINT t = Polar(pl, RING - 12, (iq[i].deg + 7) * DEG);
+		TextOutA(dc, t.x, t.y - 6, iq[i].name, (int) strlen(iq[i].name));
+	}
 
 	SelectObject(dc, range);
 	POINT sq[5] = {ToScreen(pl, LIM_LOW, LIM_LOW), ToScreen(pl, LIM_HIGH, LIM_LOW), ToScreen(pl, LIM_HIGH, LIM_HIGH),
 		ToScreen(pl, LIM_LOW, LIM_HIGH), ToScreen(pl, LIM_LOW, LIM_LOW)};
 	Polyline(dc, sq, 5);
 
-	SelectObject(dc, skin);
-	POINT s[2] = {Polar(pl, 0, 0), Polar(pl, LIM_HIGH - ZERO, SKIN_DEG * DEG)};
-	Polyline(dc, s, 2);
-
-	SetTextColor(dc, RGB(200, 200, 200));
-	SetTextAlign(dc, TA_CENTER);
 	for (int i = 0; i < NUM_BARS; i++)
 	{
-		double cb, cr;
-		BarTarget(g_bars[i], 1.0, &cb, &cr);
-		SelectObject(dc, bar100);
-		DrawTargetBox(dc, pl, cb, cr);
-		// label just outside the 100 % box
-		POINT t = Polar(pl, hypot(cb - ZERO, cr - ZERO) + 12, atan2(cr - ZERO, cb - ZERO));
-		TextOutA(dc, t.x, t.y - 6, g_bars[i].name, (int) strlen(g_bars[i].name));
-
-		BarTarget(g_bars[i], 0.75, &cb, &cr);
-		SelectObject(dc, bar75);
-		DrawTargetBox(dc, pl, cb, cr);
+		HPEN pen = CreatePen(PS_SOLID, 1, g_bars[i].color);
+		SelectObject(dc, pen);
+		double cb, cr, inner = 0, outer = 0;
+		for (double level = 0.75; level <= 1.0; level += 0.25)
+		{
+			if (!ShowLevel(grat, level))
+				continue;
+			POINT pt[2 * ARC_PTS];
+			BarTarget(g_bars[i], level, &cb, &cr);
+			PolarBox(pl, cb, cr, BOX_AMP, BOX_DEG, pt);
+			Polygon(dc, pt, 2 * ARC_PTS);
+			POINT c = ToScreen(pl, cb, cr);
+			const POINT &o = pt[0], &in = pt[2 * ARC_PTS - 1];	// outer and inner corner on one side
+			int arm = (int) hypot(o.x - in.x, o.y - in.y) / 2;	// crosshair half the box's radial size
+			MoveToEx(dc, c.x - arm, c.y, NULL);
+			LineTo(dc, c.x + arm + 1, c.y);
+			MoveToEx(dc, c.x, c.y - arm, NULL);
+			LineTo(dc, c.x, c.y + arm + 1);
+			outer = hypot(cb - ZERO, cr - ZERO);
+			if (!inner)
+				inner = outer;
+		}
+		if (outer > 0)
+		{
+			// label just outside the outermost sector shown, or inside the innermost when that would hit the ring
+			double r = outer * (1 + SECTOR_AMP) + 8;
+			if (r > RING - 6)
+				r = inner * (1 - SECTOR_AMP) - 8;
+			POINT t = Polar(pl, r, atan2(cr - ZERO, cb - ZERO));
+			SetTextColor(dc, g_bars[i].color);
+			TextOutA(dc, t.x, t.y - 6, g_bars[i].name, (int) strlen(g_bars[i].name));
+		}
+		SelectObject(dc, white);
+		DeleteObject(pen);
 	}
 
-	SelectObject(dc, old);
-	DeleteObject(axis);
+	SelectObject(dc, oldPen);
+	SelectObject(dc, oldBrush);
+	DeleteObject(white);
+	DeleteObject(ring);
 	DeleteObject(range);
-	DeleteObject(skin);
-	DeleteObject(bar75);
-	DeleteObject(bar100);
 }
 
 static void DrawScope(const DRAWITEMSTRUCT *di)
 {
 	static DWORD pix[LEVELS * LEVELS];
+	static BOOL huesMade;
+	if (!huesMade)
+	{
+		MakeHues();
+		huesMade = TRUE;
+	}
 	int w = di->rcItem.right - di->rcItem.left;
 	int h = di->rcItem.bottom - di->rcItem.top;
 	Plane pl = {0, 0, w < h ? w : h};
@@ -163,13 +277,20 @@ static void DrawScope(const DRAWITEMSTRUCT *di)
 	pl.y0 = (h - pl.side) / 2;
 
 	EnterCriticalSection(&g_lock);
+	double gain = g_gain * g_userGain / (double) GAIN_DEFAULT;
 	for (int i = 0; i < LEVELS * LEVELS; i++)
 	{
 		unsigned n = (&g_shown[0][0])[i];
-		// shortcut: sqrt keeps both single hits and dense areas visible; tune the gains on real pictures
-		unsigned c = n ? (unsigned) (sqrt((double) n) * g_gain) : 0;
+		// sqrt keeps both single hits and dense areas visible
+		unsigned c = n ? (unsigned) (sqrt((double) n) * gain) : 0;
 		if (c > 255) c = 255;
-		pix[i] = ((c / 4) << 16) | (c << 8) | (c / 4);	// green trace, 0x00RRGGBB
+		if (g_colorize)
+		{
+			DWORD hue = g_hue[i];
+			pix[i] = ((hue >> 16 & 255) * c / 255) << 16 | ((hue >> 8 & 255) * c / 255) << 8 | (hue & 255) * c / 255;
+		}
+		else
+			pix[i] = ((c / 4) << 16) | (c << 8) | (c / 4);	// green trace
 	}
 	LeaveCriticalSection(&g_lock);
 
@@ -179,6 +300,7 @@ static void DrawScope(const DRAWITEMSTRUCT *di)
 
 	RECT r = {0, 0, w, h};
 	FillRect(mem, &r, (HBRUSH) GetStockObject(BLACK_BRUSH));
+	DrawSectors(mem, pl, g_grat);
 
 	BITMAPINFO bi = {};
 	bi.bmiHeader.biSize = sizeof(bi.bmiHeader);
@@ -188,11 +310,12 @@ static void DrawScope(const DRAWITEMSTRUCT *di)
 	bi.bmiHeader.biBitCount = 32;
 	bi.bmiHeader.biCompression = BI_RGB;
 	SetStretchBltMode(mem, COLORONCOLOR);
-	StretchDIBits(mem, pl.x0, pl.y0, pl.side, pl.side, 0, 0, LEVELS, LEVELS, pix, &bi, DIB_RGB_COLORS, SRCCOPY);
+	// OR onto the sectors, so the trace shows through them
+	StretchDIBits(mem, pl.x0, pl.y0, pl.side, pl.side, 0, 0, LEVELS, LEVELS, pix, &bi, DIB_RGB_COLORS, SRCPAINT);
 
 	SetBkMode(mem, TRANSPARENT);
 	SelectObject(mem, GetStockObject(DEFAULT_GUI_FONT));
-	DrawGraticule(mem, pl);
+	DrawGraticule(mem, pl, g_grat);
 
 	char status[96];
 	if (!g_started)
@@ -207,11 +330,8 @@ static void DrawScope(const DRAWITEMSTRUCT *di)
 			sprintf(status + n, "  line %d", line > g_frameH ? g_frameH : line);
 	}
 	SetTextColor(mem, RGB(200, 200, 200));
-	SetTextAlign(mem, TA_RIGHT);
-	TextOutA(mem, w - 4, 4, status, (int) strlen(status));
 	SetTextAlign(mem, TA_LEFT);
-	TextOutA(mem, 4, 4, "75 % solid", 10);
-	TextOutA(mem, 4, 18, "100 % dotted", 12);
+	TextOutA(mem, 4, 4, status, (int) strlen(status));
 
 	BitBlt(di->hDC, di->rcItem.left, di->rcItem.top, w, h, mem, 0, 0, SRCCOPY);
 	SelectObject(mem, oldBmp);
@@ -276,26 +396,42 @@ static void SaveSettings(HWND hDlg)
 	}
 	WriteIniInt("GLOBAL", "AllLines", IsDlgButtonChecked(hDlg, IDC_ALL_LINES) == BST_CHECKED, ini);
 	WriteIniInt("GLOBAL", "Line", (long) GetDlgItemInt(hDlg, IDC_LINE, NULL, FALSE), ini);
+	WriteIniInt("GLOBAL", "Colorize", g_colorize, ini);
+	WriteIniInt("GLOBAL", "Gain", g_userGain, ini);
+	WriteIniInt("GLOBAL", "Graticule", g_grat, ini);
+}
+
+static int Clamp(int v, int lo, int hi)
+{
+	return v < lo ? lo : v > hi ? hi : v;
 }
 
 static void LoadControls(HWND hDlg)
 {
 	char ini[MAX_PATH];
-	BOOL all = TRUE;
-	int line = 1;
+	BOOL all = TRUE, colorize = TRUE;
+	int line = 1, gain = GAIN_DEFAULT, grat = GRAT_75;
 	if (GetIniFile(ini))
 	{
 		all = GetPrivateProfileIntA("GLOBAL", "AllLines", 1, ini);
 		line = GetPrivateProfileIntA("GLOBAL", "Line", 1, ini);
+		colorize = GetPrivateProfileIntA("GLOBAL", "Colorize", 1, ini);
+		gain = GetPrivateProfileIntA("GLOBAL", "Gain", GAIN_DEFAULT, ini);
+		grat = GetPrivateProfileIntA("GLOBAL", "Graticule", GRAT_75, ini);
 	}
-	// all controls before the line spin: setting its position fires EN_CHANGE -> ApplyControls
+	// all controls before the spins: setting their position fires EN_CHANGE -> ApplyControls
+	CheckDlgButton(hDlg, IDC_COLORIZE, colorize ? BST_CHECKED : BST_UNCHECKED);
+	CheckRadioButton(hDlg, IDC_GRAT_NONE, IDC_GRAT_BOTH, IDC_GRAT_NONE + Clamp(grat, GRAT_NONE, GRAT_BOTH));
 	CheckRadioButton(hDlg, IDC_ALL_LINES, IDC_ONE_LINE, all ? IDC_ALL_LINES : IDC_ONE_LINE);
+	SendDlgItemMessageA(hDlg, IDC_GAIN, EM_LIMITTEXT, 3, 0);
+	SendDlgItemMessageA(hDlg, IDC_GAIN_SPIN, UDM_SETRANGE32, 1, GAIN_MAX);
+	SendDlgItemMessageA(hDlg, IDC_GAIN_SPIN, UDM_SETPOS32, 0, Clamp(gain, 1, GAIN_MAX));
 	SendDlgItemMessageA(hDlg, IDC_LINE, EM_LIMITTEXT, 4, 0);
 	SendDlgItemMessageA(hDlg, IDC_LINE_SPIN, UDM_SETRANGE32, 1, MAX_LINE);
-	SendDlgItemMessageA(hDlg, IDC_LINE_SPIN, UDM_SETPOS32, 0, line < 1 ? 1 : line > MAX_LINE ? MAX_LINE : line);
+	SendDlgItemMessageA(hDlg, IDC_LINE_SPIN, UDM_SETPOS32, 0, Clamp(line, 1, MAX_LINE));
 }
 
-// Controls -> settings the streaming thread reads
+// Controls -> settings
 static void ApplyControls(HWND hDlg)
 {
 	BOOL one = IsDlgButtonChecked(hDlg, IDC_ONE_LINE) == BST_CHECKED;
@@ -305,6 +441,12 @@ static void ApplyControls(HWND hDlg)
 	EnableWindow(GetDlgItem(hDlg, IDC_LINE), one);
 	EnableWindow(GetDlgItem(hDlg, IDC_LINE_SPIN), one);
 	g_line = one ? line : 0;
+
+	g_colorize = IsDlgButtonChecked(hDlg, IDC_COLORIZE) == BST_CHECKED;
+	g_userGain = Clamp((int) GetDlgItemInt(hDlg, IDC_GAIN, NULL, FALSE), 1, GAIN_MAX);
+	for (int id = IDC_GRAT_NONE; id <= IDC_GRAT_BOTH; id++)
+		if (IsDlgButtonChecked(hDlg, id) == BST_CHECKED)
+			g_grat = id - IDC_GRAT_NONE;
 
 	HWND scope = g_hScope;
 	if (scope)
@@ -331,18 +473,21 @@ static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 		break;
 
 	case WM_COMMAND:
-		if (LOWORD(wParam) == IDCANCEL)		// Close button, Esc and the caption's X
+	{
+		int id = LOWORD(wParam), code = HIWORD(wParam);
+		if (id == IDCANCEL)		// Close button, Esc and the caption's X
 		{
 			DestroyWindow(hDlg);
 			return TRUE;
 		}
-		if ((LOWORD(wParam) == IDC_LINE && HIWORD(wParam) == EN_CHANGE) ||
-			(LOWORD(wParam) != IDC_LINE && HIWORD(wParam) == BN_CLICKED))
+		BOOL edit = id == IDC_LINE || id == IDC_GAIN;
+		if ((edit && code == EN_CHANGE) || (!edit && code == BN_CLICKED))
 		{
 			ApplyControls(hDlg);
 			return TRUE;
 		}
 		break;
+	}
 
 	case WM_DESTROY:
 		g_hScope = NULL;
@@ -431,7 +576,7 @@ void __cdecl VS_Uninit(void)
 static PROC_PLUGIN Vectorscope_PL =
 {
 	(char *) "Vectorscope",
-	(char *) "Cb/Cr vectorscope, 75 % and 100 % bar targets, skin-tone line, line select (YUY2)",
+	(char *) "Cb/Cr vectorscope, colour trace, 75 % / 100 % bar targets, I/Q lines, gain, line select (YUY2)",
 	VS_Init,
 	VS_Start,
 	VS_Proc,
@@ -475,8 +620,10 @@ BH_PLUGIN_EXP PROC_PLUGIN* BeholdTV_Plugin_PR()
 #ifdef VECTORSCOPE_TEST
 #include <assert.h>
 
+// Bars with a little noise, so the trace has some spread like a real signal
 static void FillBars(BYTE *frame, int w, int h, int pitch, double level)
 {
+	srand(1);
 	for (int y = 0; y < h; y++)
 		for (int x = 0; x + 1 < w; x += 2)
 		{
@@ -485,14 +632,14 @@ static void FillBars(BYTE *frame, int w, int h, int pitch, double level)
 			double cb, cr;
 			BarTarget(g_bars[bar], level, &cb, &cr);
 			p[0] = p[2] = 128;
-			p[1] = (BYTE) floor(cb + 0.5);
-			p[3] = (BYTE) floor(cr + 0.5);
+			p[1] = (BYTE) floor(cb + 0.5 + rand() % 5 - 2);
+			p[3] = (BYTE) floor(cr + 0.5 + rand() % 5 - 2);
 		}
 }
 
 static void Render(const char *path)
 {
-	enum { W = 720, H = 576, SW = 372, SH = 302 };	// scope control size at 96 dpi
+	enum { W = 720, H = 576, SW = 349, SH = 367 };	// scope control size at 96 dpi
 	static BYTE frame[H * W * 2];
 	FillBars(frame, W, H, W * 2, 0.75);
 	Accumulate(frame, W, W * 2, 0, H - 1, g_shown);
@@ -582,6 +729,17 @@ int main(int argc, char **argv)
 	assert(p.x == 11 && p.y == 21);
 	p = ToScreen(pl, LEVELS - 1, 0);
 	assert(p.x == 10 + LEVELS * 2 - 1 && p.y == 20 + LEVELS * 2 - 1);
+
+	// trace colours: centre white, 75 % red reddish, 75 % blue bluish
+	MakeHues();
+	assert(g_hue[(255 - ZERO) * LEVELS + ZERO] == 0xFFFFFF);
+	DWORD red = g_hue[(255 - 212) * LEVELS + 100], blue = g_hue[(255 - 114) * LEVELS + 212];
+	assert((red >> 16) == 255 && (red >> 8 & 255) < 128 && (red & 255) < 128);
+	assert((blue & 255) == 255 && (blue >> 16) < 128);
+
+	// graticule choice
+	assert(ShowLevel(GRAT_75, 0.75) && !ShowLevel(GRAT_75, 1.0) && ShowLevel(GRAT_100, 1.0));
+	assert(ShowLevel(GRAT_BOTH, 0.75) && ShowLevel(GRAT_BOTH, 1.0) && !ShowLevel(GRAT_NONE, 0.75));
 
 	if (argc > 1)
 		Render(argv[1]);
