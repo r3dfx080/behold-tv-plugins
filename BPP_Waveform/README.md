@@ -1,71 +1,71 @@
-# BPP_Waveform: video waveform monitor plugin
+# BPP_Waveform: осциллограф видеосигнала для BeholdTV
 
-Processing plugin (`BPP_*.dll`) for BeholdTV 5.28 that will draw a luma waveform over the picture. API and gcc build steps: [../../PLUGIN_SDK.md](../../PLUGIN_SDK.md).
+Плагин обработки (`BPP_*.dll`) для BeholdTV 5.28, который строит осциллограмму яркости кадра. API и сборка в gcc: [../../PLUGIN_SDK.md](../../PLUGIN_SDK.md).
 
-Last updated 2026-10-28.
+Обновлено 2026-10-28.
+
+![Осциллограф на цветных полосах EBU 75 %, с фильтром Low pass](ref/interface.jpg)
 
 ---
 
-## 0. Build, install, use
+## 0. Сборка, установка, работа
 
-| File | What it is |
+| Файл | Что это |
 |---|---|
-| `BPP_Waveform.cpp` | The plugin, plus a `-DWAVEFORM_TEST` self-test of the sample counting |
-| `BPP_Waveform.rc`, `resource.h` | The window (tool window, like BPP_FreqFilter's) |
-| `build.sh` | Runs the self-test, then builds `BPP_Waveform.dll`. Set `GCC_BIN` for another gcc |
+| `BPP_Waveform.cpp` | Плагин и самотест подсчёта отсчётов (`-DWAVEFORM_TEST`) |
+| `BPP_Waveform.rc`, `resource.h` | Окно |
+| `build.sh` | Запускает самотест, затем собирает `BPP_Waveform.dll`. Другой gcc задаётся через `GCC_BIN` |
 
 1. `sh build.sh`
-2. Close BeholdTV, copy `BPP_Waveform.dll` into `C:\Program Files (x86)\BeholdTV\Plugins\` (admin).
-3. Start BeholdTV, add "Waveform monitor" to the **Preview** chain, restart BeholdTV.
-4. Press the plugin's settings button: the waveform window opens and stays open beside the video. Drag its edges to resize it (no smaller than the initial size): the scope grows and the controls stay at the bottom and right. The minimize button sends it to its own taskbar button. **Always on top** is in the title-bar menu (right-click the caption): with it the window stays above other programs too, not only above BeholdTV. Close it with Close, Esc or the X; its position, size and on-top setting are saved in `%APPDATA%\BeholdTV\Plugins\BPP_Waveform.ini` (`[DIALOG] DlgWndPosX/Y`, same keys as FreqFilter, plus `DlgWndWidth/Height`, `Topmost`).
+2. Закройте BeholdTV, скопируйте `BPP_Waveform.dll` в `C:\Program Files (x86)\BeholdTV\Plugins\` (нужны права администратора).
+3. Запустите BeholdTV, добавьте «Waveform monitor» в цепочку **Preview**, перезапустите BeholdTV.
+4. Нажмите кнопку настроек плагина: окно осциллографа откроется и останется рядом с видео. Размер меняется перетаскиванием краёв (не меньше исходного): растёт экран, элементы управления остаются внизу и справа. Кнопка сворачивания убирает окно на его собственную кнопку в панели задач. **Always on top** находится в системном меню (правый щелчок по заголовку): с ним окно остаётся поверх всех программ, а не только BeholdTV. Закрывается кнопкой Close, клавишей Esc или крестиком. Положение, размер и «поверх всех» сохраняются в `%APPDATA%\BeholdTV\Plugins\BPP_Waveform.ini` (`[DIALOG] DlgWndPosX/Y`, те же ключи, что у FreqFilter, плюс `DlgWndWidth/Height`, `Topmost`).
 
-What it shows:
-- Luma (Y) only, one column per pixel pair (360 columns for 720 wide), brighter green = more samples at that level.
-- Vertical scale in 8-bit codes, 1–254 (grey lines). Codes 0 and 255 are drawn on the 1 and 254 lines.
-- Limited range 16 and 235: red dotted lines.
-- No mV / IRE scale: the digital levels don't match the analog input (the decoder's gain and the picture controls sit in between), so an mV scale would only have restated the codes. The ST 125 mapping is in §2.
-- Top right: frame size and format from BeholdTV (`720x576 YUY2`), which also answers §1's open question, plus `line N` and `LPF` when those are on. With RGB24 input it shows a notice and no trace.
-- **All lines / Line N**: the whole frame, or one frame line (1 = top line of the frame BeholdTV passes, not a broadcast line number; values past the frame height use the last line). A single line is drawn at full brightness.
-- **Low pass**: horizontal Gaussian filter on Y before plotting, −3 dB at 1 MHz (BT.601 rate scaled to the frame width; 13 taps at 720). Flat areas keep their exact level; fine detail, noise and chroma residue are smoothed out, so the trace shows average levels, like the LPF view on a hardware or Resolve scope.
-- **Highlight out of range on video**: pixels with Y below 16 or above 235 are replaced in the picture by the chosen colour (Magenta, the default, then Pink, Red, Yellow, Cyan, Blue). Raw Y is tested (no low pass); chroma levels aren't checked. A YUY2 pixel pair shares its colour samples, so the in-range neighbour of a painted pixel picks up the colour's tint. The waveform is measured before painting, so it still shows the real levels. Painting keeps working with the window closed.
-- **Keep the plugin in the Preview chain only.** In the Capture chain, painting would be burned into recordings.
-- All settings are saved in the `.ini` (`[GLOBAL] AllLines`, `Line`, `LowPass`, `Paint`, `PaintColor`). A `ScaleMv` key left by older builds is ignored.
-- Without painting the video is never changed. While the window is closed and painting is off, the plugin returns at once.
+Что показывается:
+- Только яркость (Y), один столбец на пару пикселей (360 столбцов при ширине 720); чем ярче зелёный, тем больше отсчётов на этом уровне.
+- Вертикальная шкала в 8-битных кодах, 1–254 (серые линии). Коды 0 и 255 рисуются на линиях 1 и 254.
+- Границы ограниченного диапазона 16 и 235: красные пунктирные линии.
+- Справа вверху: размер кадра и формат от BeholdTV (`720x576 YUY2`), что заодно отвечает на открытый вопрос из §1, а также `line N` и `LPF`, когда они включены. При входе RGB24 выводится сообщение, следа нет.
+- **All lines / Line N**: весь кадр или одна строка кадра (1 = верхняя строка кадра, который передаёт BeholdTV, а не номер строки в эфирном стандарте; значения больше высоты кадра дают последнюю строку). Одна строка рисуется с полной яркостью.
+- **Low pass**: горизонтальный гауссов фильтр по Y перед построением, −3 дБ на 1 МГц (частота BT.601, пересчитанная на ширину кадра)
+- **Highlight out of range on video**: пиксели с Y ниже 16 или выше 235 закрашиваются на изображении выбранным цветом (Magenta по умолчанию, далее Pink, Red, Yellow, Cyan, Blue). Проверяется исходный Y (без фильтра); уровни цветности не проверяются. Пара пикселей YUY2 делит общие цветовые отсчёты, поэтому соседний пиксель в пределах диапазона получает оттенок цвета подсветки. Осциллограмма снимается до закраски и показывает настоящие уровни. Закраска работает и при закрытом окне.
+- **Держите плагин только в цепочке Preview.** В цепочке Capture закраска попадёт в запись.
+- Все настройки сохраняются в `.ini` (`[GLOBAL] AllLines`, `Line`, `LowPass`, `Paint`, `PaintColor`). Ключ `ScaleMv` от старых сборок игнорируется.
 
 ---
 
-## 1. Sample format BeholdTV gives a plugin
+## 1. Формат отсчётов, который BeholdTV передаёт плагину
 
-**8 bits per component. There is no 10-bit path.**
+**8 бит на компоненту. 10-битного пути нет.**
 
-| Source | What it says |
+| Источник | Что в нём сказано |
 |---|---|
-| SDK `Common.h`, `ePixFmt` | Only two formats exist: `fYUY2` (0) and `fRGB24` |
-| SDK `PARAM_STR.BitPerPixel` | "2 if 16 bpp, 3 if 24 bpp", so YUY2 = 8-bit Y + 8-bit Cb/Cr (4:2:2), RGB24 = 8-bit B, G, R |
-| `DSPLUGINVER` 0x0003 | Unchanged since 2009; the 5.28 plugins still use the same exports |
+| SDK `Common.h`, `ePixFmt` | Есть только два формата: `fYUY2` (0) и `fRGB24` |
+| SDK `PARAM_STR.BitPerPixel` | «2 if 16 bpp, 3 if 24 bpp», т. е. YUY2 = 8-битный Y + 8-битные Cb/Cr (4:2:2), RGB24 = 8-битные B, G, R |
+| `DSPLUGINVER` 0x0003 | Не менялся с 2009 года; плагины 5.28 используют те же экспорты |
 
-Layout, from the YUY2 FourCC: bytes `Y0 Cb Y1 Cr` per pixel pair, top line first. Line stride is `SrcPitch` (= width × 2).
+Раскладка по FourCC YUY2: байты `Y0 Cb Y1 Cr` на пару пикселей, первой идёт верхняя строка. Шаг строки `SrcPitch` (= ширина × 2).
 
-**Not yet confirmed: which of the two formats 5.28 actually sends.** The plugin gets it in `PARAM_STR.PixFmt` at Start, so it must handle both anyway, and should log it the first time it runs. The `BPP_Inverse_diag.dll` build (logs to `%TEMP%\BPP_Inverse.log`) answers this too, but it isn't enabled: `Plugins.ini` [Preview] has `BPP_Inverse.dll`, the normal build.
+**Пока не подтверждено, какой из двух форматов на самом деле отдаёт 5.28.** Плагин получает его в `PARAM_STR.PixFmt` при запуске (Start), поэтому должен обрабатывать оба и при первом запуске записать его в журнал. На этот вопрос отвечает и сборка `BPP_Inverse_diag.dll` (пишет журнал в `%TEMP%\BPP_Inverse.log`), но она не включена: в `Plugins.ini` [Preview] стоит `BPP_Inverse.dll`, обычная сборка.
 
-Nor confirmed: whether the levels are studio range (Y 16–235) or full range (0–255). The SAA713x decoder is expected to output BT.601 studio range, and the picture controls (Brightness 128, Contrast 64, Saturation 64) change it. In RGB24 the range depends on who converts. A waveform of black/white test signals will show this directly.
+Также не подтверждено, студийный ли диапазон уровней (Y 16–235) или полный (0–255). Декодер SAA713x должен выдавать студийный диапазон BT.601, а регулировки изображения (Brightness 128, Contrast 64, Saturation 64) его меняют. В RGB24 диапазон зависит от того, кто преобразует. Осциллограмма чёрного и белого испытательных сигналов покажет это сразу.
 
-## 2. Reference levels (SMPTE ST 125:2013)
+## 2. Опорные уровни (SMPTE ST 125:2013)
 
-[ref/st0125-2013.pdf](ref/st0125-2013.pdf): *SDTV Component Video Signal Coding 4:4:4 and 4:2:2 for 13.5 MHz and 18 MHz Systems*, free from the SMPTE public library (https://pub.smpte.org/doc/st125/). It covers 625-line 50-field systems (PAL/SECAM) and defers signal construction to ITU-R BT.601 §2.
+[ref/st0125-2013.pdf](ref/st0125-2013.pdf): *SDTV Component Video Signal Coding 4:4:4 and 4:2:2 for 13.5 MHz and 18 MHz Systems*, бесплатно в публичной библиотеке SMPTE (https://pub.smpte.org/doc/st125/). Охватывает 625-строчные системы с 50 полями (PAL/SECAM), а построение сигнала отсылает к ITU-R BT.601 §2.
 
-ST 125:2013 states levels in 10 bits (Tables 1a/1b, §5.1) and notes 8-bit systems from earlier versions still exist. 8-bit = 10-bit ÷ 4:
+ST 125:2013 даёт уровни в 10 битах (таблицы 1a/1b, §5.1) и отмечает, что 8-битные системы из прежних редакций по-прежнему существуют. 8 бит = 10 бит ÷ 4:
 
-| Level | 10-bit | 8-bit | Analog (625, component) |
+| Уровень | 10 бит | 8 бит | Аналог (625, компонентный) |
 |---|---|---|---|
-| Luma black | 64 | **16** | 0 mV |
-| Luma peak white | 940 | **235** | 700 mV |
-| Luma steps black→white | 877 | 220 | |
-| Colour-difference zero | 512 | **128** | 0 mV |
-| Colour-difference extremes | 64 / 960 | **16 / 240** (225 levels) | ±350 mV |
-| Usable code range | 4–1019 | **1–254** | |
-| Timing reference only | 0–3, 1020–1023 | 0, 255 | |
+| Чёрный яркости | 64 | **16** | 0 мВ |
+| Пиковый белый яркости | 940 | **235** | 700 мВ |
+| Шагов от чёрного до белого | 877 | 220 | |
+| Ноль цветоразностного сигнала | 512 | **128** | 0 мВ |
+| Крайние значения цветоразностного сигнала | 64 / 960 | **16 / 240** (225 уровней) | ±350 мВ |
+| Рабочий диапазон кодов | 4–1019 | **1–254** | |
+| Только для синхрокодов | 0–3, 1020–1023 | 0, 255 | |
 
-Coding (Table 1a): Y' = 0.299 R' + 0.587 G' + 0.114 B'.
+Кодирование (таблица 1a): Y' = 0,299 R' + 0,587 G' + 0,114 B'.
 
-Graticule for an 8-bit waveform: 16 = 0 %, 235 = 100 %, so 1 % ≈ 2.19 codes. Values below 16 or above 235 are legal footroom/headroom, not errors; 0 and 255 never appear in a valid stream.
+Сетка для 8-битного осциллографа: 16 = 0 %, 235 = 100 %, т. е. 1 % ≈ 2,19 кода. Значения ниже 16 и выше 235 — допустимый запас снизу и сверху, а не ошибка; 0 и 255 в правильном потоке не встречаются.

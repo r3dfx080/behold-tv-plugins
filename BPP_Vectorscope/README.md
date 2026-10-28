@@ -1,53 +1,49 @@
-# BPP_Vectorscope: video vectorscope plugin
+# BPP_Vectorscope: вектороскоп для BeholdTV
 
-Processing plugin (`BPP_*.dll`) for BeholdTV 5.28 that plots Cb/Cr of each YUY2 pixel pair. Window, settings and build follow [../BPP_Waveform](../BPP_Waveform/README.md). API and gcc build steps: [../../PLUGIN_SDK.md](../../PLUGIN_SDK.md).
+Плагин обработки (`BPP_*.dll`) для BeholdTV 5.28, который строит Cb/Cr каждой пары пикселей YUY2. Окно, настройки и сборка устроены как в [../BPP_Waveform](../BPP_Waveform/README.md). API и сборка в gcc: [../../PLUGIN_SDK.md](../../PLUGIN_SDK.md).
 
-Last updated 2026-10-28.
+Обновлено 2026-10-28.
 
----
-
-## Build, install, use
-
-| File | What it is |
-|---|---|
-| `BPP_Vectorscope.cpp` | The plugin, plus a `-DVECTORSCOPE_TEST` self-test |
-| `BPP_Vectorscope.rc`, `resource.h` | The window |
-| `build.sh` | Runs the self-test, then builds `BPP_Vectorscope.dll`. Set `GCC_BIN` for another gcc |
-
-1. `sh build.sh`. `./vectorscope_test.exe out.bmp` also renders synthetic 75 % bars onto the scope, to check the graticule without BeholdTV.
-2. Close BeholdTV, copy `BPP_Vectorscope.dll` into `C:\Program Files (x86)\BeholdTV\Plugins\` (admin).
-3. Start BeholdTV, add "Vectorscope" to the **Preview** chain, restart BeholdTV.
-4. Press the plugin's settings button: the window opens beside the video. Drag its edges to resize it (no smaller than the initial size): the scope grows, the options panel stays on the right. The minimize button sends it to its own taskbar button. **Always on top** is in the title-bar menu (right-click the caption): with it the window stays above other programs too, not only above BeholdTV. Close with Close, Esc or the X; position, size and settings go to `%APPDATA%\BeholdTV\Plugins\BPP_Vectorscope.ini` (`[DIALOG] DlgWndPosX/Y`, `DlgWndWidth/Height`, `Topmost`, `[GLOBAL] AllLines`, `Line`, `Field`, `Colorize`, `Gain`, `Graticule`).
-
-The look follows decode-orc's vectorscope. What it shows:
-- One point per YUY2 pixel pair: Cb across (right = +B−Y), Cr up (+R−Y), centre = 128/128 (no colour). Brightness follows the square root of the count, so both single points and dense areas show.
-- **Colorize**: each point in its own hue (white near the centre); off = green trace.
-- **Gain** 1–100 (default 10): trace brightness.
-- Ring at Cb/Cr ±112 (16/240, ±350 mV), ticks every 2° (long every 10°), Cb/Cr axes.
-- I / Q / −I / −Q lines at 123° / 33° / 303° / 213°. The I line is the skin-tone line.
-- Dotted grey square: the 16..240 colour-difference range (its corners lie outside the ring).
-- **Graticule None / 75% / 100% / Both**: per bar, a filled sector ±10° / ±10 % in the bar's colour, a small box ±3° / ±5 % and a crosshair on the exact BT.601 target (75 % red = Cb 100, Cr 212). 75 % = BT.471 100/0/75/0, the EBU bars on PAL. The trace is OR-ed over the sectors, so it stays visible inside them.
-- **All lines / Line N**: whole frame or one frame line, as in the waveform.
-- **Fields: All / Top / Bottom**: with All lines, measure only one field of the interlaced frame. Top = frame lines 1, 3, 5…, bottom = 2, 4, 6…. Named by position, not time order: which field comes first depends on the capture. Assumes BeholdTV passes woven (not deinterlaced) frames, which is what a combed picture on fast motion shows. Greyed out with Line N, since one line is already in one field. A field has half the samples, so the trace is a little dimmer; raise Gain if needed.
-- Not taken from decode-orc: burst target, trace lines, defocus. They belong to its composite decoder; BeholdTV hands the plugin decoded YUY2 frames.
-- The video is never changed. While the window is closed the plugin returns at once.
-- RGB24 input shows a notice and no trace.
-
-With EBU bars on the input, the dots should sit in the solid boxes. Dots rotated off the boxes = hue error; dots inside or outside along the vector = saturation (gain) error, i.e. the picture controls or decoder aren't at unity.
+![Вектороскоп на цветных полосах EBU 75 %](assets/interface.jpg)
 
 ---
 
-## References
+## Сборка, установка, работа
 
-No SMPTE or ITU standard defines the vectorscope itself or its graticule: target boxes and their tolerances (e.g. ±3° / ±5 %) come from scope makers. The standards define the coding and the test signal.
-
-| File | What it gives the vectorscope |
+| Файл | Что это |
 |---|---|
-| [../BPP_Waveform/ref/st0125-2013.pdf](../BPP_Waveform/ref/st0125-2013.pdf) | SMPTE ST 125:2013. 8-bit Cb/Cr: 128 = zero, 16/240 = ±350 mV (see the waveform README §2) |
-| [ref/R-REC-BT.471-1-198607.pdf](ref/R-REC-BT.471-1-198607.pdf) | ITU-R BT.471-1, colour bar nomenclature. 100/0/75/0 = type (b), the EBU bars on PAL |
-| [ref/ebu-n010-1998.pdf](ref/ebu-n010-1998.pdf) | EBU Tech N10-1998, analogue component levels: Y 0–700 mV, E'CB/E'CR ±350 mV, Y' = 0.299 R' + 0.587 G' + 0.114 B' |
-| [ref/rp0219-1-2014.pdf](ref/rp0219-1-2014.pdf) | SMPTE RP 219-1:2014, HD/SD bars with 10-bit code tables. These are BT.709 (HD) values: not SD targets, use for context only |
+| `BPP_Vectorscope.cpp` | Плагин и самотест (`-DVECTORSCOPE_TEST`) |
+| `BPP_Vectorscope.rc`, `resource.h` | Окно |ы
+| `build.sh` | Запускает самотест, затем собирает `BPP_Vectorscope.dll`. Другой gcc задаётся через `GCC_BIN` |
 
-Sources: https://www.itu.int/rec/R-REC-BT.471-1-198607-I/en, https://tech.ebu.ch (N10), https://pub.smpte.org/doc/rp219-1/. SMPTE EG 1-1990 (NTSC composite bars, −I/+Q) had no free copy.
+1. `sh build.sh`. Команда `./vectorscope_test.exe out.bmp` дополнительно рисует синтетические полосы 75 % на экране вектороскопа, чтобы проверить сетку без BeholdTV.
+2. Закройте BeholdTV, скопируйте `BPP_Vectorscope.dll` в `C:\Program Files (x86)\BeholdTV\Plugins\` (нужны права администратора).
+3. Запустите BeholdTV, добавьте «Vectorscope» в цепочку **Preview**, перезапустите BeholdTV.
+4. Нажмите кнопку настроек плагина: окно откроется рядом с видео. Размер меняется перетаскиванием краёв (не меньше исходного): растёт экран, панель настроек остаётся справа. Кнопка сворачивания убирает окно на его собственную кнопку в панели задач. **Always on top** находится в системном меню (правый щелчок по заголовку): с ним окно остаётся поверх всех программ, а не только BeholdTV. Закрывается кнопкой Close, клавишей Esc или крестиком. Положение, размер и настройки сохраняются в `%APPDATA%\BeholdTV\Plugins\BPP_Vectorscope.ini` (`[DIALOG] DlgWndPosX/Y`, `DlgWndWidth/Height`, `Topmost`, `[GLOBAL] AllLines`, `Line`, `Field`, `Colorize`, `Gain`, `Graticule`).
 
-Graticule targets for SD therefore come from BT.601 coding of the bar colours (`BarTarget`): Cb = 128 + 224 (−0.168736 R′ − 0.331264 G′ + 0.5 B′), Cr = 128 + 224 (0.5 R′ − 0.418688 G′ − 0.081312 B′), with R′G′B′ = 0.75 or 1.0. This is computed in floating point rather than with BPP_Waveform's integer `RgbToYuv`, which rounds 75 % yellow's Cr to 141 instead of 142.
+Внешний вид повторяет вектороскоп decode-orc. Что показывается:
+- Одна точка на пару пикселей YUY2: Cb по горизонтали (вправо = +B−Y), Cr по вертикали (вверх = +R−Y), центр = 128/128 (нет цвета). Яркость точки растёт как квадратный корень из числа попаданий, поэтому видны и одиночные точки, и плотные области.
+- **Colorize**: каждая точка своим цветовым тоном (у центра белая); без галочки след зелёный.
+- **Gain** 1–100 (по умолчанию 10): яркость следа.
+- Окружность на Cb/Cr ±112 (16/240, ±350 мВ), риски через 2° (длинные через 10°), оси Cb/Cr.
+- Линии I / Q / −I / −Q под углами 123° / 33° / 303° / 213°. Линия I совпадает с линией телесных тонов.
+- Серый пунктирный квадрат: диапазон цветоразностных сигналов 16..240 (его углы лежат за окружностью).
+- **Graticule None / 75% / 100% / Both**: для каждой полосы сектор ±10° / ±10 % в цвете полосы, малый квадрат ±3° / ±5 % и перекрестие на точной цели BT.601 (красный 75 % = Cb 100, Cr 212). 75 % = полосы 100/0/75/0 по BT.471, т. е. полосы EBU в PAL. След накладывается на секторы через OR и внутри них остаётся виден.
+- **All lines / Line N**: весь кадр или одна строка кадра, как в осциллографе.
+- **Fields: All / Top / Bottom**: при All lines меряется только одно поле чересстрочного кадра. Top = строки кадра 1, 3, 5…, Bottom = 2, 4, 6…. Названия по положению в кадре, а не по порядку во времени: какое поле идёт первым, зависит от захвата. Предполагается, что BeholdTV передаёт кадры без деинтерлейсинга (это видно по «гребёнке» на быстром движении). При Line N группа неактивна: одна строка и так принадлежит одному полю. В поле вдвое меньше отсчётов, поэтому след немного тусклее; при необходимости увеличьте Gain.
+- При входе RGB24 выводится сообщение, следа нет.
+
+---
+
+## Источники
+
+| Файл | Что он даёт вектороскопу |
+|---|---|
+| [../BPP_Waveform/ref/st0125-2013.pdf](../BPP_Waveform/ref/st0125-2013.pdf) | SMPTE ST 125:2013. 8-битные Cb/Cr: 128 = ноль, 16/240 = ±350 мВ (см. README осциллографа, §2) |
+| [ref/R-REC-BT.471-1-198607.pdf](ref/R-REC-BT.471-1-198607.pdf) | ITU-R BT.471-1, обозначения цветных полос. 100/0/75/0 = тип (b), полосы EBU в PAL |
+| [ref/ebu-n010-1998.pdf](ref/ebu-n010-1998.pdf) | EBU Tech N10-1998, уровни аналогового компонентного сигнала: Y 0–700 мВ, E'CB/E'CR ±350 мВ, Y' = 0,299 R' + 0,587 G' + 0,114 B' |
+| [ref/rp0219-1-2014.pdf](ref/rp0219-1-2014.pdf) | SMPTE RP 219-1:2014, полосы HD/SD с таблицами 10-битных кодов. Это значения BT.709 (HD), а не цели для SD; только для справки |
+
+Ссылки: https://www.itu.int/rec/R-REC-BT.471-1-198607-I/en, https://tech.ebu.ch (N10), https://pub.smpte.org/doc/rp219-1/. Свободной копии SMPTE EG 1-1990 (композитные полосы NTSC, −I/+Q) найти не удалось.
+
+Поэтому цели сетки для SD вычисляются по кодированию BT.601 цветов полос (`BarTarget`): Cb = 128 + 224 (−0,168736 R′ − 0,331264 G′ + 0,5 B′), Cr = 128 + 224 (0,5 R′ − 0,418688 G′ − 0,081312 B′), где R′G′B′ = 0,75 или 1,0. Расчёт идёт в плавающей точке, а не через целочисленную `RgbToYuv` из BPP_Waveform, которая округляет Cr жёлтого 75 % до 141 вместо 142.
