@@ -1,0 +1,2 @@
+#define IDD_WAVEFORM	100
+#define IDC_SCOPE		1000

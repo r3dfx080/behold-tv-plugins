@@ -1,0 +1,4 @@
+# build outputs (see build.sh)
+*.dll
+*.exe
+*.o

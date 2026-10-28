@@ -1,0 +1,13 @@
+#include <windows.h>
+#include "resource.h"
+
+// Standalone tool window, same style as BPP_FreqFilter's main dialog
+IDD_WAVEFORM DIALOGEX 0, 0, 256, 194
+STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
+EXSTYLE WS_EX_TOOLWINDOW
+CAPTION "BPP_Waveform"
+FONT 8, "MS Sans Serif"
+BEGIN
+    CONTROL         "", IDC_SCOPE, "Static", SS_OWNERDRAW, 4, 4, 248, 170
+    PUSHBUTTON      "Close", IDCANCEL, 205, 178, 47, 13
+END
