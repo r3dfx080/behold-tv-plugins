@@ -1,0 +1,6 @@
+#define IDD_VECTORSCOPE	100
+#define IDC_SCOPE		1000
+#define IDC_ALL_LINES	1001
+#define IDC_ONE_LINE	1002
+#define IDC_LINE		1003
+#define IDC_LINE_SPIN	1004
