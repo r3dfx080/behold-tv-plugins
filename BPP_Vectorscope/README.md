@@ -17,7 +17,7 @@ Last updated 2026-10-28.
 1. `sh build.sh`. `./vectorscope_test.exe out.bmp` also renders synthetic 75 % bars onto the scope, to check the graticule without BeholdTV.
 2. Close BeholdTV, copy `BPP_Vectorscope.dll` into `C:\Program Files (x86)\BeholdTV\Plugins\` (admin).
 3. Start BeholdTV, add "Vectorscope" to the **Preview** chain, restart BeholdTV.
-4. Press the plugin's settings button: the window opens beside the video. Close with Close, Esc or the X; position and settings go to `%APPDATA%\BeholdTV\Plugins\BPP_Vectorscope.ini` (`[DIALOG] DlgWndPosX/Y`, `[GLOBAL] AllLines`, `Line`, `Colorize`, `Gain`, `Graticule`).
+4. Press the plugin's settings button: the window opens beside the video. Drag its edges to resize it (no smaller than the initial size): the scope grows, the options panel stays on the right. **Always on top** is in the title-bar menu (right-click the caption): with it the window stays above other programs too, not only above BeholdTV. Close with Close, Esc or the X; position, size and settings go to `%APPDATA%\BeholdTV\Plugins\BPP_Vectorscope.ini` (`[DIALOG] DlgWndPosX/Y`, `DlgWndWidth/Height`, `Topmost`, `[GLOBAL] AllLines`, `Line`, `Colorize`, `Gain`, `Graticule`).
 
 The look follows decode-orc's vectorscope. What it shows:
 - One point per YUY2 pixel pair: Cb across (right = +B−Y), Cr up (+R−Y), centre = 128/128 (no colour). Brightness follows the square root of the count, so both single points and dense areas show.

@@ -307,10 +307,80 @@ static BOOL GetIniFile(char *path)
 	return TRUE;
 }
 
+// Resizing: the scope takes the change in size; controls right of or below it move with those edges
+struct Anchored { HWND h; RECT r; };
+static Anchored		g_ctl[32];
+static int			g_numCtl;			// 0 until WM_INITDIALOG has recorded the layout
+static SIZE			g_client0, g_minSize;
+static RECT			g_scope0;
+
+static BOOL CALLBACK AddControl(HWND h, LPARAM hDlg)
+{
+	if (g_numCtl < (int) (sizeof(g_ctl) / sizeof(g_ctl[0])))
+	{
+		Anchored &a = g_ctl[g_numCtl++];
+		a.h = h;
+		GetWindowRect(h, &a.r);
+		MapWindowPoints(NULL, (HWND) hDlg, (POINT *) &a.r, 2);
+	}
+	return TRUE;
+}
+
+// Record the dialog's initial layout; its size is also the minimum
+static void InitLayout(HWND hDlg)
+{
+	RECT r;
+	GetClientRect(hDlg, &r);
+	g_client0.cx = r.right;
+	g_client0.cy = r.bottom;
+	GetWindowRect(hDlg, &r);
+	g_minSize.cx = r.right - r.left;
+	g_minSize.cy = r.bottom - r.top;
+	GetWindowRect(GetDlgItem(hDlg, IDC_SCOPE), &g_scope0);
+	MapWindowPoints(NULL, hDlg, (POINT *) &g_scope0, 2);
+	g_numCtl = 0;
+	EnumChildWindows(hDlg, AddControl, (LPARAM) hDlg);
+}
+
+static void Layout(HWND hDlg, int cx, int cy)
+{
+	int dx = cx - g_client0.cx, dy = cy - g_client0.cy;
+	HWND scope = GetDlgItem(hDlg, IDC_SCOPE);
+	HDWP dwp = BeginDeferWindowPos(g_numCtl);
+	for (int i = 0; i < g_numCtl && dwp; i++)
+	{
+		RECT r = g_ctl[i].r;
+		if (g_ctl[i].h == scope)
+		{
+			r.right += dx;
+			r.bottom += dy;
+		}
+		else
+		{
+			if (r.right >= g_scope0.right)
+				OffsetRect(&r, dx, 0);
+			if (r.bottom >= g_scope0.bottom)
+				OffsetRect(&r, 0, dy);
+		}
+		dwp = DeferWindowPos(dwp, g_ctl[i].h, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE);
+	}
+	if (dwp)
+		EndDeferWindowPos(dwp);
+	InvalidateRect(hDlg, NULL, TRUE);
+}
+
 static void RestorePos(HWND hDlg, HWND hParent)
 {
 	char ini[MAX_PATH];
 	RECT d, p;
+
+	if (GetIniFile(ini))
+	{
+		int w = GetPrivateProfileIntA("DIALOG", "DlgWndWidth", 0, ini);
+		int h = GetPrivateProfileIntA("DIALOG", "DlgWndHeight", 0, ini);
+		if (w >= g_minSize.cx && h >= g_minSize.cy)
+			SetWindowPos(hDlg, NULL, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+	}
 	GetWindowRect(hDlg, &d);
 
 	if (GetIniFile(ini))
@@ -326,6 +396,26 @@ static void RestorePos(HWND hDlg, HWND hParent)
 	if (hParent && GetWindowRect(hParent, &p))
 		SetWindowPos(hDlg, NULL, (p.left + p.right - (d.right - d.left)) / 2, (p.top + p.bottom - (d.bottom - d.top)) / 2,
 			0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// "Always on top" in the window's system menu (command IDs there must be below 0xF000, low 4 bits clear)
+enum { IDM_TOPMOST = 0x0010, WM_APP_TOPMOST = WM_APP + 1 };
+static BOOL			g_topmost;			// window thread only
+
+static void SetTopmost(HWND hDlg, BOOL on)
+{
+	g_topmost = on;
+	SetWindowPos(hDlg, on ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+	CheckMenuItem(GetSystemMenu(hDlg, FALSE), IDM_TOPMOST, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+}
+
+static void InitTopmost(HWND hDlg)
+{
+	char ini[MAX_PATH];
+	HMENU menu = GetSystemMenu(hDlg, FALSE);
+	AppendMenuA(menu, MF_SEPARATOR, 0, NULL);
+	AppendMenuA(menu, MF_STRING, IDM_TOPMOST, "Always on top");
+	SetTopmost(hDlg, GetIniFile(ini) && GetPrivateProfileIntA("DIALOG", "Topmost", 0, ini));
 }
 
 static void WriteIniInt(const char *section, const char *key, long value, const char *ini)
@@ -345,7 +435,10 @@ static void SaveSettings(HWND hDlg)
 	{
 		WriteIniInt("DIALOG", "DlgWndPosX", r.left, ini);
 		WriteIniInt("DIALOG", "DlgWndPosY", r.top, ini);
+		WriteIniInt("DIALOG", "DlgWndWidth", r.right - r.left, ini);
+		WriteIniInt("DIALOG", "DlgWndHeight", r.bottom - r.top, ini);
 	}
+	WriteIniInt("DIALOG", "Topmost", g_topmost, ini);
 	WriteIniInt("GLOBAL", "AllLines", IsDlgButtonChecked(hDlg, IDC_ALL_LINES) == BST_CHECKED, ini);
 	WriteIniInt("GLOBAL", "Line", (long) GetDlgItemInt(hDlg, IDC_LINE, NULL, FALSE), ini);
 	WriteIniInt("GLOBAL", "LowPass", g_lowpass, ini);
@@ -407,7 +500,42 @@ static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 		LoadControls(hDlg);
 		ApplyControls(hDlg);
 		g_hScope = GetDlgItem(hDlg, IDC_SCOPE);
+		InitLayout(hDlg);
 		RestorePos(hDlg, (HWND) lParam);
+		InitTopmost(hDlg);
+		return TRUE;
+
+	case WM_WINDOWPOSCHANGED:
+		// BeholdTV (Delphi VCL) clears topmost on its thread's windows when it loses focus: put it back.
+		// Posted, as SetWindowPos can't undo it from inside the change.
+		if (g_topmost && !(GetWindowLong(hDlg, GWL_EXSTYLE) & WS_EX_TOPMOST))
+			PostMessage(hDlg, WM_APP_TOPMOST, 0, 0);
+		break;
+
+	case WM_APP_TOPMOST:
+		if (g_topmost)
+			SetTopmost(hDlg, TRUE);
+		return TRUE;
+
+	case WM_SYSCOMMAND:
+		if ((wParam & 0xFFF0) == IDM_TOPMOST)
+		{
+			SetTopmost(hDlg, !g_topmost);
+			return TRUE;
+		}
+		break;
+
+	case WM_SIZE:
+		if (g_numCtl)
+			Layout(hDlg, LOWORD(lParam), HIWORD(lParam));
+		return TRUE;
+
+	case WM_GETMINMAXINFO:
+		if (g_numCtl)
+		{
+			((MINMAXINFO *) lParam)->ptMinTrackSize.x = g_minSize.cx;
+			((MINMAXINFO *) lParam)->ptMinTrackSize.y = g_minSize.cy;
+		}
 		return TRUE;
 
 	case WM_DRAWITEM:
@@ -436,6 +564,7 @@ static INT_PTR CALLBACK DialogProc(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lP
 	case WM_DESTROY:
 		g_hScope = NULL;
 		SaveSettings(hDlg);
+		g_numCtl = 0;
 		g_hDlg = NULL;
 		break;
 	}
@@ -535,7 +664,10 @@ void __cdecl WF_ShowDialog(DLG_STR *pDlgPar)
 	InitCommonControlsEx(&icc);
 	g_hDlg = CreateDialogParamA(g_hInst, MAKEINTRESOURCEA(IDD_WAVEFORM), pDlgPar->hwndParent, DialogProc, (LPARAM) pDlgPar->hwndParent);
 	if (g_hDlg)
+	{
 		ShowWindow(g_hDlg, SW_SHOW);
+		SetTopmost(g_hDlg, g_topmost);		// set during WM_INITDIALOG it doesn't stick
+	}
 }
 
 void __cdecl WF_Uninit(void)

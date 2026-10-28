@@ -17,7 +17,7 @@ Last updated 2026-10-28.
 1. `sh build.sh`
 2. Close BeholdTV, copy `BPP_Waveform.dll` into `C:\Program Files (x86)\BeholdTV\Plugins\` (admin).
 3. Start BeholdTV, add "Waveform monitor" to the **Preview** chain, restart BeholdTV.
-4. Press the plugin's settings button: the waveform window opens and stays open beside the video. Close it with Close, Esc or the X; its position is saved in `%APPDATA%\BeholdTV\Plugins\BPP_Waveform.ini` (`[DIALOG] DlgWndPosX/Y`, same keys as FreqFilter).
+4. Press the plugin's settings button: the waveform window opens and stays open beside the video. Drag its edges to resize it (no smaller than the initial size): the scope grows and the controls stay at the bottom and right. **Always on top** is in the title-bar menu (right-click the caption): with it the window stays above other programs too, not only above BeholdTV. Close it with Close, Esc or the X; its position, size and on-top setting are saved in `%APPDATA%\BeholdTV\Plugins\BPP_Waveform.ini` (`[DIALOG] DlgWndPosX/Y`, same keys as FreqFilter, plus `DlgWndWidth/Height`, `Topmost`).
 
 What it shows:
 - Luma (Y) only, one column per pixel pair (360 columns for 720 wide), brighter green = more samples at that level.
